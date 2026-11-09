@@ -3,18 +3,27 @@
 namespace App\Services;
 
 use App\Models\BacklogProject;
+use App\Models\Team;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class BacklogWorkflow
 {
+    private ?User $actor = null;
+
     public function __construct(private DemoScenario $scenario) {}
 
-    public function reset(?int $version, bool $example = true): BacklogProject
+    public function reset(Team $team, User $actor, ?int $version, bool $example = true): BacklogProject
     {
-        return DB::transaction(function () use ($version, $example): BacklogProject {
-            $project = BacklogProject::where('workspace', 'local-demo')->lockForUpdate()->first();
+        return DB::transaction(function () use ($team, $actor, $version, $example): BacklogProject {
+            Team::whereKey($team->id)->lockForUpdate()->firstOrFail();
+            Gate::forUser($actor)->authorize('view', $team);
+            Gate::forUser($actor)->authorize('reset', $team);
+            $this->actor = $actor;
+            $project = BacklogProject::where('team_id', $team->id)->lockForUpdate()->first();
             abort_if($project && $project->version !== $version, 409, 'The workspace changed. Reload before resetting.');
             $state = $this->scenario->initial();
             if ($example) {
@@ -44,7 +53,7 @@ class BacklogWorkflow
                 $state['nodes']['reply']['dependencies'] = ['queue'];
             }
             if (! $project) {
-                return BacklogProject::create(['workspace' => 'local-demo', 'version' => 1, 'state' => $state]);
+                return BacklogProject::create(['workspace' => 'team-'.$team->id, 'team_id' => $team->id, 'version' => 1, 'state' => $state]);
             }
             $project->update(['state' => $state, 'version' => $project->version + 1]);
 
@@ -53,10 +62,19 @@ class BacklogWorkflow
     }
 
     /** @param array<string, mixed> $input */
-    public function command(array $input): BacklogProject
+    public function command(Team $team, User $actor, array $input): BacklogProject
     {
-        return DB::transaction(function () use ($input): BacklogProject {
-            $project = BacklogProject::where('workspace', 'local-demo')->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($team, $actor, $input): BacklogProject {
+            Team::whereKey($team->id)->lockForUpdate()->firstOrFail();
+            Gate::forUser($actor)->authorize('view', $team);
+            $ability = match ($input['action']) {
+                'approve', 'approve_breakdown', 'reject', 'resolve' => 'review',
+                'prepare_batch', 'publish' => 'publish',
+                default => 'edit',
+            };
+            Gate::forUser($actor)->authorize($ability, $team);
+            $this->actor = $actor;
+            $project = BacklogProject::where('team_id', $team->id)->lockForUpdate()->firstOrFail();
             abort_if($project->version !== (int) $input['version'], 409, 'The workspace changed in another tab. Reload and review the latest version.');
             $state = $project->state;
             $id = $input['node_id'] ?? null;
@@ -78,7 +96,7 @@ class BacklogWorkflow
                     if (! $this->isCompleted($node)) {
                         $state['nodes'][$id]['completed_revision'] = $node['revision'];
                         $state['nodes'][$id]['completed_at'] = now()->toIso8601String();
-                        $state['nodes'][$id]['completed_by'] = 'Local reviewer';
+                        $state['nodes'][$id]['completed_by'] = $actor->name;
                         $this->record($state, 'completed', $id, $node['revision']);
                     }
                     break;
@@ -160,7 +178,7 @@ class BacklogWorkflow
                     $this->ensure(isset($state['decisions'][$decisionId]), 'This node has no clarification to resolve.');
                     $this->invalidate($state, $id);
                     $state['decisions'][$decisionId]['answer'] = $input['answer'];
-                    $state['decisions'][$decisionId]['resolved_by'] = 'Local reviewer';
+                    $state['decisions'][$decisionId]['resolved_by'] = $actor->name;
                     $state['decisions'][$decisionId]['resolved_at'] = now()->toIso8601String();
                     $this->record($state, 'decision_resolved', $id, $state['nodes'][$id]['revision']);
                     break;
@@ -208,7 +226,7 @@ class BacklogWorkflow
                         $state['nodes'][$item['node_id']]['published_revision'] = $item['revision'];
                     }
                     $state['batches'][$index]['status'] = 'published';
-                    $state['batches'][$index]['approved_by'] = 'Local reviewer';
+                    $state['batches'][$index]['approved_by'] = $actor->name;
                     $state['batches'][$index]['approved_at'] = now()->toIso8601String();
                     $this->record($state, 'simulation_published', null, null);
                     break;
@@ -397,9 +415,9 @@ class BacklogWorkflow
     }
 
     /** @param array<string, mixed> $state */
-    private function record(array &$state, string $action, ?string $id, ?int $revision, string $actor = 'Local reviewer'): void
+    private function record(array &$state, string $action, ?string $id, ?int $revision, ?string $actor = null): void
     {
-        $state['history'][] = ['action' => $action, 'node_id' => $id, 'revision' => $revision, 'actor' => $actor, 'at' => now()->toIso8601String(), 'snapshot' => $id !== null ? $state['nodes'][$id] : null, 'decision' => $id !== null ? ($state['decisions'][$id.'-policy'] ?? null) : null];
+        $state['history'][] = ['action' => $action, 'node_id' => $id, 'revision' => $revision, 'actor' => $actor ?? $this->actor?->name, 'actor_id' => $actor === 'Example reviewer' ? null : $this->actor?->id, 'at' => now()->toIso8601String(), 'snapshot' => $id !== null ? $state['nodes'][$id] : null, 'decision' => $id !== null ? ($state['decisions'][$id.'-policy'] ?? null) : null];
     }
 
     private function ensure(bool $condition, string $message): void

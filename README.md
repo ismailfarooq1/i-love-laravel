@@ -31,6 +31,7 @@ The intended destination is a reviewed GitHub backlog, with enough context for a
 
 | Capability | How it works |
 | :--- | :--- |
+| **Team access and isolation** | Register, verify your email, switch team workspaces, and invite people with explicit roles. |
 | **Multiple independent goals** | Add objectives with their own branches, decisions, approvals, and tasks. |
 | **A visual goal map** | Pan, zoom, expand branches, focus on a node, and fit the hierarchy to the view. A keyboard-accessible outline provides another way to navigate. |
 | **Node overlays** | Review and edit a goal or task, inspect evidence, and take available actions while the map stays behind the overlay. |
@@ -123,7 +124,7 @@ php artisan migrate --no-interaction
 php artisan db:seed --class=BacklogProjectSeeder --no-interaction
 ```
 
-The seeder creates the support portal example only if the demo workspace does not already exist. You can also initialize a workspace from the application itself.
+Register an account, verify your email, and initialize your team workspace from the application. The seeder initializes examples for existing teams that do not yet have a workspace; it does not create accounts. With the default local mail logger, verification and password reset links are written to `storage/logs/laravel.log`. Configure a mail transport to deliver them to an inbox.
 
 ### 4. Start development
 
@@ -137,7 +138,7 @@ Open the address printed by the Laravel development server. The development comm
 
 ## Take a tour
 
-1. **Explore the example.** The support portal scenario includes approved goals, draft tasks, an unresolved attachment policy, and an independent staff workflow.
+1. **Sign in and explore the example.** The support portal scenario includes approved goals, draft tasks, an unresolved attachment policy, and an independent staff workflow.
 2. **Select a node.** Its overlay shows the proposal, evidence, available actions, completion blockers, and history. Use **Close** or **Escape** to return to the map.
 3. **Resolve a question.** Review the suggested attachment policy, accept it or enter your own answer, then approve the affected breakdown.
 4. **Add another goal.** Choose **+ Add goal**, enter an objective, approve it, and request a scripted breakdown. Review and adapt the generic suggestions to your goal.
@@ -147,7 +148,7 @@ Open the address printed by the Laravel development server. The development comm
 > [!NOTE]
 > The support portal example uses fixed source references. New custom goals receive generic scripted breakdowns, without invented document evidence. Uploaded text is saved for inspection; it is not interpreted by a real AI model.
 
-**Reset demo** offers a fresh workspace or the example scenario. Resetting requires confirmation and replaces saved documents, edits, decisions, approvals, and simulated publication batches.
+**Reset workspace** offers a fresh workspace or the example scenario. Resetting requires confirmation and replaces saved documents, edits, decisions, approvals, and simulated publication batches.
 
 ## Under the hood
 
@@ -160,7 +161,7 @@ Open the address printed by the Laravel development server. The development comm
 | Admin foundation | Filament 5 is installed; the planning experience is the custom React application. |
 | Verification | PHPUnit 11 and Laravel Pint. |
 
-The prototype stores one shared workspace as a **versioned JSON snapshot** in the `backlog_projects` table. Source versions, goal/task nodes, decisions, history, and publication batches are saved together. Mutations run in database transactions and check the submitted workspace version.
+The prototype stores one workspace per team as a **versioned JSON snapshot** in the `backlog_projects` table. Source versions, goal/task nodes, decisions, history, and publication batches are saved together. Mutations run in database transactions and check the submitted workspace version.
 
 Useful starting points:
 
@@ -187,20 +188,45 @@ npm run build
 
 Tests cover approval gates, completion prerequisites, reopening propagation, dependency cycles, source versioning, upload validation, stale writes, branch isolation, and repeat-safe simulated publication.
 
+## Team access
+
+Authentication includes registration, session-based login/logout, email verification, and password recovery. A new account owns a private team; users can create more teams and switch between memberships.
+
+| Role | Read | Edit / generate / complete | Approve / decide / publish | Manage members / reset |
+| :--- | :---: | :---: | :---: | :---: |
+| Owner | ✓ | ✓ | ✓ | ✓ |
+| Admin | ✓ | ✓ | ✓ | ✓ |
+| Reviewer | ✓ | ✓ | ✓ | — |
+| Editor | ✓ | ✓ | — | — |
+| Viewer | ✓ | — | — | — |
+
+Owners and admins create single-use invitations valid for seven days. Share the generated link with the invited person; acceptance requires a verified account matching the invitation email. Invitations can be revoked, and role changes and removals take effect on subsequent requests. Owners cannot be demoted or removed through membership management.
+
+Workspace reads and writes are scoped to authenticated team membership, including source documents, node IDs, decisions, history, and publication batches. Each browser tab sends its selected team explicitly, so switching teams elsewhere cannot redirect a pending edit into another tenant. New workflow audit events identify the authenticated actor; historical example events retain their original labels. The global Filament panel is not available to ordinary team accounts.
+
+### Preserve an existing demo
+
+The migration preserves the old shared demo as **unassigned**. It is never automatically exposed to a new account. Before initializing a destination team's workspace, an operator can explicitly assign the legacy demo:
+
+```bash
+php artisan tracework:adopt-demo TEAM_ID --no-interaction
+```
+
+Find the numeric team ID in **Team & access**. The command refuses to overwrite an existing team workspace and preserves the legacy snapshot and history. Team invitations are shared manually; no invitation email is automatically sent.
+
 ## Prototype boundaries
 
-This release is intended for **local exploration in a single shared workspace**. The planning endpoints do not provide user authentication, team permissions, or tenant isolation. Reviewer names in the history are demo labels rather than verified user identities.
-
-AI generation and GitHub publication are simulations. PDF and Word ingestion, real repository inspection, human assignment, and agent execution are not implemented. Keep these boundaries in mind when demonstrating the tool or extending it toward a hosted product.
+AI generation and GitHub publication remain simulations. PDF and Word ingestion, real repository inspection, human task assignment, and agent execution are not implemented. Production deployment still requires environment, mail delivery, operational monitoring, and performance work.
 
 ## What’s next
 
 - [ ] Real AI document analysis with structured, source-linked proposals.
 - [ ] GitHub authentication and real issue publishing with hierarchy preservation.
-- [ ] User accounts, team permissions, and human task assignment.
+- [x] User accounts, team permissions, and tenant isolation.
+- [ ] Human task assignment.
 - [ ] Richer document ingestion, including PDF and Word.
 - [ ] Repository-aware planning and proposed issue updates when requirements change.
-- [ ] Production authentication, observability, performance, and deployment work.
+- [ ] Production observability, performance, and deployment work.
 - [ ] Eventually, controlled assignment of approved tasks to agents or swarms.
 
 ---

@@ -3,6 +3,8 @@
 namespace Tests\Feature;
 
 use App\Models\BacklogProject;
+use App\Models\Team;
+use App\Models\User;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
@@ -13,8 +15,11 @@ class BacklogWorkflowTest extends TestCase
 {
     use LazilyRefreshDatabase;
 
+    private ?Team $team = null;
+
     public function test_reading_an_empty_workspace_does_not_create_records(): void
     {
+        $this->authenticateOwner();
         $this->getJson(route('workspace.show'))->assertOk()->assertJsonPath('state', null);
 
         $this->assertDatabaseCount('backlog_projects', 0);
@@ -22,6 +27,7 @@ class BacklogWorkflowTest extends TestCase
 
     public function test_example_is_persisted_with_a_blocked_and_an_independent_branch(): void
     {
+        $this->authenticateOwner();
         $this->postJson(route('workspace.reset'), ['confirmation' => 'RESET'])
             ->assertOk()->assertJsonPath('state.nodes.root.parent_id', null)
             ->assertJsonPath('state.nodes.queue.status', 'approved')
@@ -71,7 +77,7 @@ class BacklogWorkflowTest extends TestCase
         $this->loadExample();
 
         $this->command('resolve', ['node_id' => 'intake', 'answer' => 'PNG and JPEG, maximum 5 MB.'])->assertOk()
-            ->assertJsonPath('state.decisions.intake-policy.resolved_by', 'Local reviewer');
+            ->assertJsonPath('state.decisions.intake-policy.resolved_by', 'Test Reviewer');
         $this->command('approve_breakdown', ['node_id' => 'requests'])->assertOk();
         $this->command('approve_breakdown', ['node_id' => 'intake'])->assertOk()
             ->assertJsonPath('state.nodes.attachments.status', 'approved');
@@ -318,7 +324,7 @@ class BacklogWorkflowTest extends TestCase
 
         $this->command('complete', ['node_id' => 'resolution'])->assertOk()
             ->assertJsonPath('state.nodes.resolution.completed_revision', 1)
-            ->assertJsonPath('state.nodes.resolution.completed_by', 'Local reviewer');
+            ->assertJsonPath('state.nodes.resolution.completed_by', 'Test Reviewer');
 
         $this->getJson(route('workspace.show'))->assertJsonPath('state.nodes.resolution.completed_revision', 1);
         $this->assertSame('approved', BacklogProject::first()->state['nodes']['resolution']['status']);
@@ -442,7 +448,8 @@ class BacklogWorkflowTest extends TestCase
 
     public function test_unapproved_parent_blocks_child_approval_even_if_children_already_exist(): void
     {
-        $project = BacklogProject::factory()->create();
+        $this->authenticateOwner();
+        $project = BacklogProject::factory()->create(['team_id' => $this->team->id]);
         $state = $project->state;
         $state['nodes'] = [
             'parent' => ['id' => 'parent', 'parent_id' => null, 'type' => 'goal', 'status' => 'proposed', 'breakdown' => 'proposed', 'revision' => 1],
@@ -459,11 +466,13 @@ class BacklogWorkflowTest extends TestCase
 
     private function startFresh(): void
     {
+        $this->authenticateOwner();
         $this->postJson(route('workspace.reset'), ['confirmation' => 'RESET', 'example' => false])->assertOk();
     }
 
     private function loadExample(): void
     {
+        $this->authenticateOwner();
         $this->postJson(route('workspace.reset'), ['confirmation' => 'RESET'])->assertOk();
     }
 
@@ -479,5 +488,14 @@ class BacklogWorkflowTest extends TestCase
             'version' => BacklogProject::first()->version,
             'file' => UploadedFile::fake()->createWithContent($name, $content),
         ], ['Accept' => 'application/json']);
+    }
+
+    private function authenticateOwner(): void
+    {
+        if ($this->team === null) {
+            $user = User::factory()->create(['name' => 'Test Reviewer']);
+            $this->team = Team::factory()->for($user, 'owner')->create();
+            $this->actingAs($user)->withSession(['team_id' => $this->team->id]);
+        }
     }
 }
