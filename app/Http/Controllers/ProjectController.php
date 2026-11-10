@@ -29,6 +29,7 @@ class ProjectController extends Controller
         $data = $request->validate(['name' => ['required', 'string', 'max:100'], 'description' => ['nullable', 'string', 'max:3000'], 'connection_mode' => ['required', Rule::in(['app', 'oauth', 'later'])]]);
         $state = $scenario->initial();
         $state['name'] = $data['name'];
+        $state['documents'] = [];
         $project = BacklogProject::create([...$data, 'workspace' => (string) Str::uuid(), 'team_id' => $team->id, 'version' => 1, 'state' => $state]);
         $request->session()->put('project_id.'.$team->id, $project->id);
 

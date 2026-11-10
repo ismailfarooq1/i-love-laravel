@@ -53,7 +53,7 @@ class GitHubIntegrationTest extends TestCase
         $first = $this->postJson(route('projects.store'), ['name' => 'First', 'description' => 'One repository.', 'connection_mode' => 'later'])->assertCreated()->json('id');
         $second = $this->postJson(route('projects.store'), ['name' => 'Second', 'connection_mode' => 'oauth'])->assertCreated()->json('id');
 
-        $this->getJson(route('workspace.show'), ['X-Team-ID' => $team->id, 'X-Project-ID' => $first])->assertJsonPath('name', 'First');
+        $this->getJson(route('workspace.show'), ['X-Team-ID' => $team->id, 'X-Project-ID' => $first])->assertJsonPath('name', 'First')->assertJsonCount(0, 'state.documents')->assertJsonCount(0, 'state.nodes');
         $this->getJson(route('workspace.show'), ['X-Team-ID' => $team->id, 'X-Project-ID' => $second])->assertJsonPath('name', 'Second');
         $this->getJson(route('workspace.show'), ['X-Team-ID' => $team->id, 'X-Project-ID' => $foreign->id])->assertNotFound();
         $this->postJson(route('projects.select', $foreign))->assertNotFound();
