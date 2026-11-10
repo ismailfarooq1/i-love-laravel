@@ -1,6 +1,10 @@
 <?php
 
 use App\Http\Controllers\AuthenticationController;
+use App\Http\Controllers\GitHubConnectionController;
+use App\Http\Controllers\GitHubPublicationController;
+use App\Http\Controllers\GitHubWebhookController;
+use App\Http\Controllers\ProjectController;
 use App\Http\Controllers\TeamController;
 use App\Http\Controllers\TeamInvitationController;
 use App\Http\Controllers\TeamMemberController;
@@ -38,6 +42,22 @@ Route::middleware(['auth', 'auth.session', 'verified'])->group(function (): void
     Route::get('/invitations/{token}', fn (string $token): View => view('auth', ['screen' => 'invitation', 'token' => $token, 'email' => '']))->name('invitations.show');
     Route::get('/invitations/{token}/details', [TeamInvitationController::class, 'show'])->name('invitations.details');
     Route::post('/invitations/{token}', [TeamInvitationController::class, 'update'])->name('invitations.accept');
+    Route::get('/projects', [ProjectController::class, 'index'])->name('projects.index');
+    Route::post('/projects', [ProjectController::class, 'store'])->name('projects.store');
+    Route::post('/projects/{project}/select', [ProjectController::class, 'update'])->name('projects.select');
+    Route::get('/github/callback', [GitHubConnectionController::class, 'callback'])->name('github.callback');
+    Route::get('/github/installed', [GitHubConnectionController::class, 'installed'])->name('github.installed');
+    Route::get('/projects/{project}/github/connections', [GitHubConnectionController::class, 'index'])->name('github.connections');
+    Route::post('/projects/{project}/github/connect', [GitHubConnectionController::class, 'store'])->name('github.connect');
+    Route::post('/projects/{project}/github/{connection}/install', [GitHubConnectionController::class, 'install'])->name('github.install');
+    Route::get('/projects/{project}/github/{connection}/repositories', [GitHubConnectionController::class, 'repositories'])->name('github.repositories');
+    Route::put('/projects/{project}/github', [GitHubConnectionController::class, 'update'])->name('github.bind');
+    Route::delete('/projects/{project}/github', [GitHubConnectionController::class, 'destroy'])->name('github.disconnect');
+    Route::get('/projects/{project}/publications', [GitHubPublicationController::class, 'index'])->name('github.publications');
+    Route::post('/projects/{project}/publications', [GitHubPublicationController::class, 'store'])->name('github.preview');
+    Route::post('/projects/{project}/publications/{publication}/approve', [GitHubPublicationController::class, 'update'])->name('github.publish');
+    Route::post('/projects/{project}/github/synchronize', [GitHubPublicationController::class, 'synchronize'])->name('github.synchronize');
+    Route::post('/projects/{project}/github/issues/{issue}/retry-creation', [GitHubPublicationController::class, 'retryCreation'])->name('github.retryCreation');
     Route::prefix('workspace')->name('workspace.')->group(function (): void {
         Route::get('/', [WorkspaceController::class, 'show'])->name('show');
         Route::post('/reset', [WorkspaceController::class, 'store'])->name('reset');
@@ -45,3 +65,5 @@ Route::middleware(['auth', 'auth.session', 'verified'])->group(function (): void
         Route::post('/documents', [WorkspaceController::class, 'document'])->name('documents');
     });
 });
+
+Route::post('/github/webhook', GitHubWebhookController::class)->name('github.webhook');

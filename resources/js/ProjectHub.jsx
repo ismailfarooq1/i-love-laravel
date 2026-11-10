@@ -1,0 +1,49 @@
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+import { Alert, Box, Button, Checkbox, FormControlLabel, MenuItem, Paper, Radio, RadioGroup, Stack, TextField, Typography } from '@mui/material';
+
+export function projectPath(template, project, extras = {}) {
+    return Object.entries({ __PROJECT__: project?.id, ...extras }).reduce((path, [key, value]) => path.replace(key, value), template);
+}
+
+export default function ProjectHub({ identity, context, endpoints, refresh }) {
+    const project = context.project;
+    const [name, setName] = useState('');
+    const [description, setDescription] = useState('');
+    const [mode, setMode] = useState(project?.connection_mode === 'oauth' ? 'oauth' : 'app');
+    const [creating, setCreating] = useState(!project);
+    const [connections, setConnections] = useState([]);
+    const [connectionId, setConnectionId] = useState('');
+    const [repos, setRepos] = useState([]);
+    const [repository, setRepository] = useState('');
+    const [confirm, setConfirm] = useState(false);
+    const [error, setError] = useState('');
+    const [notice, setNotice] = useState('');
+    const [busy, setBusy] = useState(false);
+    const url = (key, extras = {}) => projectPath(endpoints[key], project, extras);
+    const headers = { Accept: 'application/json', 'X-Team-ID': identity.team?.id };
+    const request = async (method, target, data = {}) => {
+        setBusy(true); setError(''); setNotice('');
+        try { const result = await axios({ method, url: target, data, headers }); return result.data; }
+        catch (error) { setError(Object.values(error.response?.data?.errors || {}).flat().join(' ') || error.response?.data?.message || 'The GitHub request could not be completed.'); }
+        finally { setBusy(false); }
+    };
+    useEffect(() => {
+        if (project) axios.get(url('githubConnections'), { headers }).then(result => setConnections(result.data)).catch(() => setError('Could not load your GitHub connections.'));
+    }, [project?.id]);
+    const connection = connections.find(item => item.id === Number(connectionId));
+    const create = async () => {
+        const result = await request('post', endpoints.createProject, { name, description, connection_mode: mode });
+        if (result) { await refresh(); window.location.assign(window.location.pathname + '?settings=github'); }
+    };
+    return <Stack spacing={3}>
+        <Box><Typography variant="h4">Projects & GitHub</Typography><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Each project connects to one repository and contains its own documents and goal trees.</Typography></Box>
+        {error && <Alert severity="error">{error}</Alert>}{notice && <Alert severity="success">{notice}</Alert>}
+        {!project && <Alert severity="info">Start by creating your first project. You can connect GitHub now or plan locally and connect later.</Alert>}
+        {project && <Paper variant="outlined" sx={{ p: 3 }}><Stack direction="row" justifyContent="space-between" gap={2}><Box><Typography variant="h6">{project.name}</Typography><Typography variant="body2" color="text.secondary">{project.description || 'Your selected project'}</Typography><Typography variant="body2" sx={{ mt: 1 }}>{project.repository_full_name || 'No repository connected'}{project.repository_full_name && ` · ${project.repository_private ? 'Private' : 'Public'}`}</Typography>{project.github_connection && <Typography variant="caption">Connected through {project.github_connection.mode === 'app' ? 'GitHub App' : `@${project.github_connection.login}`} · Two-way completion sync</Typography>}</Box>{identity.permissions.manage && <Button onClick={() => setCreating(!creating)}>{creating ? 'Cancel new project' : '+ New project'}</Button>}</Stack>{project.repository_full_name && <Alert severity="info" sx={{ mt: 2 }}>Closing an issue completes its approved node only when children and prerequisites are finished. Invalid closures are automatically reopened. Reopening work also reopens completed parents and dependents.</Alert>}{identity.permissions.manage && project.github_connection_id && <Button color="error" disabled={busy} sx={{ mt: 2 }} onClick={async () => { if (!window.confirm('Pause this project’s GitHub publishing and synchronization? Existing issues will remain on GitHub.')) return; if (await request('delete', url('githubDisconnect'))) { await refresh(); window.location.reload(); } }}>Disconnect project</Button>}</Paper>}
+        {creating && identity.permissions.manage && <Paper variant="outlined" sx={{ p: 3 }}><Typography variant="h6" sx={{ mb: 2 }}>1 · Create a project</Typography><Stack spacing={2}><TextField label="Project name" value={name} onChange={event => setName(event.target.value)} inputProps={{ maxLength: 100 }} /><TextField label="What are you building?" value={description} onChange={event => setDescription(event.target.value)} multiline minRows={2} inputProps={{ maxLength: 3000 }} /><Typography variant="subtitle2">How would you like to connect?</Typography><RadioGroup value={mode} onChange={event => setMode(event.target.value)}><FormControlLabel value="app" control={<Radio />} label="GitHub App · selected repositories, shared team publishing" /><FormControlLabel value="oauth" control={<Radio />} label="Personal GitHub account · each publisher connects their identity" /><FormControlLabel value="later" control={<Radio />} label="Connect later · start with goals and documents" /></RadioGroup><Button variant="contained" disabled={busy || !name.trim()} onClick={create}>Create project</Button></Stack></Paper>}
+        {!identity.permissions.manage && !project && <Alert severity="info">An Owner or Admin needs to create your team’s first project.</Alert>}
+        {project && identity.permissions.publish && (identity.permissions.manage || project.connection_mode === 'oauth') && <Paper variant="outlined" sx={{ p: 3 }}><Typography variant="h6" sx={{ mb: 2 }}>2 · Authorize GitHub</Typography><RadioGroup row value={mode} onChange={event => setMode(event.target.value)}><FormControlLabel value="app" disabled={!identity.permissions.manage} control={<Radio />} label="GitHub App" /><FormControlLabel value="oauth" control={<Radio />} label="Personal account" /></RadioGroup><Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>{mode === 'app' ? 'Authorize your GitHub identity, then install the app on selected repositories. The app publishes as its bot identity.' : 'Personal OAuth requires repository and webhook permissions. Publishing uses your own GitHub identity; background state sync uses the identity that published each issue.'}</Typography>{!context.github_configured[mode] && <Alert severity="warning" sx={{ mb: 2 }}>The server administrator must configure {mode === 'app' ? 'GitHub App' : 'GitHub OAuth App'} credentials before you can connect. See the README setup instructions.</Alert>}<Button variant="contained" disabled={busy || !context.github_configured[mode]} onClick={async () => { const result = await request('post', url('githubConnect'), { mode }); if (result) window.location.assign(result.url); }}>Authorize {mode === 'app' ? 'GitHub App' : 'personal GitHub account'}</Button></Paper>}
+        {project && identity.permissions.manage && <Paper variant="outlined" sx={{ p: 3 }}><Typography variant="h6" sx={{ mb: 2 }}>3 · Select one repository</Typography><Stack spacing={2}><TextField select label="Your GitHub connection" value={connectionId} onChange={event => { setConnectionId(event.target.value); setRepos([]); setRepository(''); setConfirm(false); }}><MenuItem value="">Choose a connection</MenuItem>{connections.filter(item => !item.revoked).map(item => <MenuItem key={item.id} value={item.id}>@{item.login} · {item.mode === 'app' ? `GitHub App${item.installation_id ? ' · installation #'+item.installation_id : ' · authorize / install'}` : 'Personal OAuth'}</MenuItem>)}</TextField>{connection?.mode === 'app' && <Button variant="outlined" disabled={busy} onClick={async () => { const result = await request('post', url('githubInstall', { __CONNECTION__: connection.id })); if (result) window.location.assign(result.url); }}>{connection.installation_id ? 'Manage / select app installation' : 'Install app on selected repositories'}</Button>}<Button variant="outlined" disabled={busy || !connection || (connection.mode === 'app' && !connection.installation_id)} onClick={async () => { const result = await request('get', url('githubRepos', { __CONNECTION__: connection.id })); if (result) { setRepos(result); if (!result.length) setNotice('No eligible repositories were returned. Check installation access and enabled issues.'); } }}>Load repositories</Button>{repos.length > 0 && <TextField select label="Repository" value={repository} onChange={event => setRepository(event.target.value)}><MenuItem value="">Choose a repository</MenuItem>{repos.map(repo => <MenuItem key={repo.id} value={repo.id}>{repo.full_name} · {repo.private ? 'Private' : 'Public'}</MenuItem>)}</TextField>}<Typography variant="caption" color="text.secondary">Configuring a repository requires GitHub administrator access. Personal OAuth installs an issues webhook; GitHub App mode uses the app’s configured webhook.</Typography><FormControlLabel control={<Checkbox checked={confirm} onChange={event => setConfirm(event.target.checked)} />} label={<Typography variant="body2">Enable two-way completion synchronization and automatic reopening to enforce the project’s approval, child-completion, and prerequisite rules.</Typography>} /><Button variant="contained" disabled={busy || !repository || !connection || !confirm} onClick={async () => { if (await request('put', url('githubBind'), { connection_id: connection.id, repository_id: repository, confirm_sync: true })) { await refresh(); window.location.reload(); } }}>Connect repository & enable synchronization</Button></Stack></Paper>}
+    </Stack>;
+}

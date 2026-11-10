@@ -14,6 +14,17 @@ return [
     |
     */
 
+    'github' => [
+        'app_id' => env('GITHUB_APP_ID'),
+        'app_slug' => env('GITHUB_APP_SLUG'),
+        'app_client_id' => env('GITHUB_APP_CLIENT_ID'),
+        'app_client_secret' => env('GITHUB_APP_CLIENT_SECRET'),
+        'private_key' => env('GITHUB_APP_PRIVATE_KEY'),
+        'oauth_client_id' => env('GITHUB_OAUTH_CLIENT_ID'),
+        'oauth_client_secret' => env('GITHUB_OAUTH_CLIENT_SECRET'),
+        'webhook_secret' => env('GITHUB_WEBHOOK_SECRET'),
+    ],
+
     'postmark' => [
         'token' => env('POSTMARK_TOKEN'),
     ],

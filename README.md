@@ -25,13 +25,14 @@ Create multiple top-level goals, break them into smaller outcomes, and refine th
 The intended destination is a reviewed GitHub backlog, with enough context for a human teammate—and eventually an agent—to pick up a bounded piece of work.
 
 > [!IMPORTANT]
-> **This is a working local prototype.** Planning, reviews, document storage, completion tracking, and publication previews are persisted in Laravel. AI generation is scripted, and GitHub publication is simulated. No real model analyzes your uploads, and no GitHub issues are created.
+> **This is a working local prototype.** Planning, reviews, document storage, completion tracking, and publication previews are persisted in Laravel. AI generation is scripted; no real model analyzes your uploads. Connecting GitHub enables **real issue publishing and completion synchronization**, subject to explicit human review. Historical simulated batches remain labeled as simulations.
 
 ## What you can do today
 
 | Capability | How it works |
 | :--- | :--- |
 | **Team access and isolation** | Register, verify your email, switch team workspaces, and invite people with explicit roles. |
+| **Projects and repositories** | Create multiple team projects, each connected to one repository or kept offline. |
 | **Multiple independent goals** | Add objectives with their own branches, decisions, approvals, and tasks. |
 | **A visual goal map** | Pan, zoom, expand branches, focus on a node, and fit the hierarchy to the view. A keyboard-accessible outline provides another way to navigate. |
 | **Node overlays** | Review and edit a goal or task, inspect evidence, and take available actions while the map stays behind the overlay. |
@@ -39,7 +40,7 @@ The intended destination is a reviewed GitHub backlog, with enough context for a
 | **Inspectable proposals** | Read source passages with line references, see explicit assumptions, and compare recorded revisions. |
 | **Human decision checkpoints** | Review proposed breakdowns and resolve ambiguous requirements before affected work proceeds. |
 | **Approval and completion gates** | Approval flows down the hierarchy; completion flows back up. Task prerequisites are enforced separately. |
-| **Publication previews** | Select approved nodes, review a batch that includes their goal ancestors, and explicitly approve simulated publication. |
+| **Publication previews** | Select approved nodes, review a batch that includes their goal ancestors, and explicitly approve real issue creation or updates, preserving native sub-issues and task dependencies. |
 | **Persistent review history** | Save decisions, revision snapshots, completion events, and publication records in the database. |
 
 ## How the workflow fits together
@@ -53,7 +54,7 @@ flowchart LR
     Q --> C
     D --> E[Publication preview]
     E --> F[Human approval]
-    F --> G[Simulated GitHub backlog]
+    F --> G[GitHub issues and sub-issues]
 ```
 
 A goal describes an **outcome**. A task describes a **bounded piece of implementation work**. Branches can have different depths, and each branch moves forward through its own review checkpoints.
@@ -134,7 +135,58 @@ composer run dev
 
 Open the address printed by the Laravel development server. The development command starts Laravel, Vite, the queue listener, and the log viewer.
 
-**No AI API key or GitHub credentials are required for this prototype.**
+**No AI API key is required.** GitHub is optional; configure the applications below to enable real publishing.
+
+## Connect GitHub
+
+Each project targets one repository and supports multiple independent goals. During onboarding choose **GitHub App**, **personal OAuth**, or **connect later**. A team administrator selects the repository and explicitly accepts completion synchronization. Once issue mappings exist, use a new project to target a different repository.
+
+### Register the applications
+
+Use a public HTTPS address that routes to this local application, for example through your preferred development tunnel. Set `APP_URL` to that address and open Tracework through it so authorization state remains in the same browser session. Replace `https://YOUR-HOST` below with that address.
+
+1. **GitHub App:** create an app in GitHub Developer settings. Set its callback URL to `https://YOUR-HOST/github/callback`, setup URL to `https://YOUR-HOST/github/installed`, and active webhook URL to `https://YOUR-HOST/github/webhook`. Set a strong webhook secret. Grant repository **Issues: read and write** and **Metadata: read**; subscribe to **Issues** events. Installation lifecycle events are also processed. Allow installation only on selected repositories. Keep installation and user authorization separate: authorize inside Tracework first, then use its installation button. Generate a client secret and a PEM private key. Record the App ID, slug, client ID, client secret, and private key.
+2. **OAuth App:** create a separate OAuth application with callback URL `https://YOUR-HOST/github/callback`. Record its client ID and secret. Personal authorization requests repository, repository-webhook administration, identity, and offline access scopes. The configuring account must administer the selected repository; each personal-mode publisher authorizes their own account.
+3. Add the values to your local `.env`; never commit secrets:
+
+```dotenv
+GITHUB_APP_ID=YOUR_APP_ID
+GITHUB_APP_SLUG=YOUR_APP_SLUG
+GITHUB_APP_CLIENT_ID=YOUR_APP_CLIENT_ID
+GITHUB_APP_CLIENT_SECRET=YOUR_APP_CLIENT_SECRET
+GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nYOUR_PEM_CONTENT\n-----END RSA PRIVATE KEY-----"
+GITHUB_OAUTH_CLIENT_ID=YOUR_OAUTH_CLIENT_ID
+GITHUB_OAUTH_CLIENT_SECRET=YOUR_OAUTH_CLIENT_SECRET
+GITHUB_WEBHOOK_SECRET=YOUR_STRONG_RANDOM_SECRET
+```
+
+Use the same webhook secret in the GitHub App settings. Personal OAuth mode creates or updates a repository Issues webhook using this secret. Preserve `APP_KEY`: stored tokens and cached installation tokens are encrypted with it. Do not share private keys or client secrets in chat.
+
+```bash
+php artisan config:clear
+php artisan migrate --no-interaction
+```
+
+Run a database-backed queue worker and scheduler alongside the web application. `composer run dev` already starts a queue listener; run the scheduler separately:
+
+```bash
+php artisan queue:work --tries=5 --timeout=60
+php artisan schedule:work
+```
+
+Use either the queue listener or the worker. Webhooks must reach the application, and the scheduler queues reconciliation every five minutes. Configure your queue connection's retry interval above the worker timeout (the default database interval is 90 seconds).
+
+### Publish and synchronize
+
+Open **Projects & GitHub**, authorize the chosen identity, install the App if applicable, select a repository, and confirm the synchronization rules. App mode publishes as the installation; personal mode uses the approving user's GitHub identity. Existing email/password sign-in remains unchanged.
+
+Select approved nodes in **GitHub publishing**. The preview includes required ancestors and prerequisites, exact proposed issue bodies, and existing content that would be replaced. Only the person who prepared the preview may approve it. Changed revisions or remote content require a fresh review. Native hierarchy supports up to eight nesting levels and 100 children per parent; oversized hierarchies are rejected before publishing.
+
+Completion synchronizes in both directions. A premature GitHub close is automatically reopened when approvals, children, or prerequisites are incomplete. Reopening required work also reopens completed parents and dependent tasks. Parents never complete automatically. Signed webhook deliveries are deduplicated; periodic reconciliation handles missed events.
+
+Issue mappings survive partial failures. Retry a failed batch to reconcile existing issues and finish missing links. If a creation response was lost, Tracework searches for its stable marker before creating anything else. An unresolved result requires an administrator to check GitHub and explicitly confirm that no issue exists before enabling another creation attempt. Disconnecting pauses publishing and synchronization; it preserves issue mappings and does not remove the GitHub installation or repository webhook. Revoke those separately in GitHub if desired.
+
+Automated integration tests fake GitHub HTTP traffic. A live acceptance check requires registered applications: connect a disposable repository, approve a small hierarchy, publish it, verify sub-issues and dependencies, then test valid completion, premature closure, reopening, and repeated webhook delivery.
 
 ## Take a tour
 
@@ -143,12 +195,12 @@ Open the address printed by the Laravel development server. The development comm
 3. **Resolve a question.** Review the suggested attachment policy, accept it or enter your own answer, then approve the affected breakdown.
 4. **Add another goal.** Choose **+ Add goal**, enter an objective, approve it, and request a scripted breakdown. Review and adapt the generic suggestions to your goal.
 5. **Follow the gates.** Approve parents before children. Complete prerequisite tasks and child nodes before marking their dependents and parents complete.
-6. **Preview publication.** In **GitHub publishing**, select eligible nodes, prepare a batch, inspect its contents, and approve the simulation.
+6. **Preview publication.** In **GitHub publishing**, select eligible nodes, prepare a batch, inspect its contents, and approve real publication. GitHub must be connected first; otherwise planning remains available.
 
 > [!NOTE]
 > The support portal example uses fixed source references. New custom goals receive generic scripted breakdowns, without invented document evidence. Uploaded text is saved for inspection; it is not interpreted by a real AI model.
 
-**Reset workspace** offers a fresh workspace or the example scenario. Resetting requires confirmation and replaces saved documents, edits, decisions, approvals, and simulated publication batches.
+**Reset workspace** offers a fresh workspace or the example scenario. Resetting requires confirmation and replaces saved documents, edits, decisions, approvals, and simulated publication batches. Projects with published issues or an uncertain creation attempt cannot be reset; create another project instead.
 
 ## Under the hood
 
@@ -161,7 +213,7 @@ Open the address printed by the Laravel development server. The development comm
 | Admin foundation | Filament 5 is installed; the planning experience is the custom React application. |
 | Verification | PHPUnit 11 and Laravel Pint. |
 
-The prototype stores one workspace per team as a **versioned JSON snapshot** in the `backlog_projects` table. Source versions, goal/task nodes, decisions, history, and publication batches are saved together. Mutations run in database transactions and check the submitted workspace version.
+The prototype stores multiple projects per team, each as a **versioned JSON snapshot** in the `backlog_projects` table. Source versions, goal/task nodes, decisions, history, and publication batches are saved together. Mutations run in database transactions and check the submitted workspace version.
 
 Useful starting points:
 
@@ -216,12 +268,12 @@ Find the numeric team ID in **Team & access**. The command refuses to overwrite 
 
 ## Prototype boundaries
 
-AI generation and GitHub publication remain simulations. PDF and Word ingestion, real repository inspection, human task assignment, and agent execution are not implemented. Production deployment still requires environment, mail delivery, operational monitoring, and performance work.
+AI generation remains simulated. GitHub publishing uses real API calls after configuration and approval. PDF and Word ingestion, real repository inspection, human task assignment, and agent execution are not implemented. Production deployment still requires environment, mail delivery, operational monitoring, and performance work.
 
 ## What’s next
 
 - [ ] Real AI document analysis with structured, source-linked proposals.
-- [ ] GitHub authentication and real issue publishing with hierarchy preservation.
+- [x] GitHub App and personal OAuth authorization, real issue publishing, native hierarchy, and completion synchronization.
 - [x] User accounts, team permissions, and tenant isolation.
 - [ ] Human task assignment.
 - [ ] Richer document ingestion, including PDF and Word.

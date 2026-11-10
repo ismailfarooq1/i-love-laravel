@@ -93,7 +93,7 @@ export default function GoalTree({ state, expanded, onSelect, onToggle, cameraSt
             title.textContent = node.title;
             const badge = document.createElement('span');
             badge.className = 'goal-card-status';
-            badge.textContent = `${['completed', 'approved', 'published'].includes(status) ? '✓' : status === 'blocked' ? '!' : '○'} ${stateLabels[status]}`;
+            badge.textContent = `${['completed', 'approved', 'published'].includes(status) ? '✓' : status === 'blocked' ? '!' : '○'} ${status === 'published' ? node.publication_mode === 'live' ? 'Published · GitHub' : 'Published · demo' : stateLabels[status]}`;
             select.append(meta, title, badge);
             const completion = completionInfo(state, node);
             if (completion.children.length || completion.prerequisites.length) {

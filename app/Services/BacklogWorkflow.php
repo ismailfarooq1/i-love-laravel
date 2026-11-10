@@ -16,14 +16,16 @@ class BacklogWorkflow
 
     public function __construct(private DemoScenario $scenario) {}
 
-    public function reset(Team $team, User $actor, ?int $version, bool $example = true): BacklogProject
+    public function reset(Team $team, User $actor, ?int $version, bool $example = true, ?BacklogProject $target = null): BacklogProject
     {
-        return DB::transaction(function () use ($team, $actor, $version, $example): BacklogProject {
+        return DB::transaction(function () use ($team, $actor, $version, $example, $target): BacklogProject {
             Team::whereKey($team->id)->lockForUpdate()->firstOrFail();
             Gate::forUser($actor)->authorize('view', $team);
             Gate::forUser($actor)->authorize('reset', $team);
             $this->actor = $actor;
-            $project = BacklogProject::where('team_id', $team->id)->lockForUpdate()->first();
+            $project = BacklogProject::where('team_id', $team->id)->when($target, fn ($query) => $query->whereKey($target->id))->orderBy('id')->lockForUpdate()->first();
+            $this->ensure(! $target || $project !== null, 'This project does not belong to the selected team.');
+            $this->ensure(! $project || (! $project->githubIssues()->where(fn ($query) => $query->whereNotNull('github_id')->orWhere('creation_status', 'creating'))->exists() && ! $project->publications()->whereIn('status', ['queued', 'publishing'])->exists()), 'Projects with published issues or active publishing cannot be reset. Create a new project instead.');
             abort_if($project && $project->version !== $version, 409, 'The workspace changed. Reload before resetting.');
             $state = $this->scenario->initial();
             if ($example) {
@@ -53,18 +55,18 @@ class BacklogWorkflow
                 $state['nodes']['reply']['dependencies'] = ['queue'];
             }
             if (! $project) {
-                return BacklogProject::create(['workspace' => 'team-'.$team->id, 'team_id' => $team->id, 'version' => 1, 'state' => $state]);
+                return BacklogProject::create(['workspace' => 'team-'.$team->id, 'team_id' => $team->id, 'version' => 1, 'state' => $state, 'name' => $state['name']]);
             }
-            $project->update(['state' => $state, 'version' => $project->version + 1]);
+            $project->update(['state' => $state, 'generation' => (string) Str::uuid(), 'version' => $project->version + 1]);
 
             return $project->refresh();
         });
     }
 
     /** @param array<string, mixed> $input */
-    public function command(Team $team, User $actor, array $input): BacklogProject
+    public function command(Team $team, User $actor, array $input, ?BacklogProject $target = null): BacklogProject
     {
-        return DB::transaction(function () use ($team, $actor, $input): BacklogProject {
+        return DB::transaction(function () use ($team, $actor, $input, $target): BacklogProject {
             Team::whereKey($team->id)->lockForUpdate()->firstOrFail();
             Gate::forUser($actor)->authorize('view', $team);
             $ability = match ($input['action']) {
@@ -74,7 +76,7 @@ class BacklogWorkflow
             };
             Gate::forUser($actor)->authorize($ability, $team);
             $this->actor = $actor;
-            $project = BacklogProject::where('team_id', $team->id)->lockForUpdate()->firstOrFail();
+            $project = BacklogProject::where('team_id', $team->id)->when($target, fn ($query) => $query->whereKey($target->id))->orderBy('id')->lockForUpdate()->firstOrFail();
             abort_if($project->version !== (int) $input['version'], 409, 'The workspace changed in another tab. Reload and review the latest version.');
             $state = $project->state;
             $id = $input['node_id'] ?? null;
@@ -186,6 +188,7 @@ class BacklogWorkflow
                     $this->addDocument($state, $input);
                     break;
                 case 'prepare_batch':
+                    $this->ensure(! $project->repository_id, 'Use the real GitHub publication preview for connected projects.');
                     $selected = $input['node_ids'];
                     foreach ($input['node_ids'] as $selectedId) {
                         $this->ensure(isset($state['nodes'][$selectedId]), 'A selected node does not exist.');
@@ -213,6 +216,7 @@ class BacklogWorkflow
                     $this->record($state, 'publication_prepared', null, null);
                     break;
                 case 'publish':
+                    $this->ensure(! $project->repository_id, 'Use the real GitHub publication approval for connected projects.');
                     $index = array_search($input['batch_id'], array_column($state['batches'], 'id'), true);
                     $this->ensure($index !== false, 'The publication batch does not exist.');
                     if ($state['batches'][$index]['status'] === 'published') {
@@ -232,6 +236,7 @@ class BacklogWorkflow
                     break;
             }
             $project->update(['state' => $state, 'version' => $project->version + 1]);
+            GitHubSynchronization::queueLocal($project->refresh());
 
             return $project->refresh();
         });
@@ -305,7 +310,7 @@ class BacklogWorkflow
     }
 
     /** @param array<string, mixed> $state */
-    private function publishable(array $state, string $id): bool
+    public function publishable(array $state, string $id): bool
     {
         $node = $state['nodes'][$id];
 
@@ -417,7 +422,59 @@ class BacklogWorkflow
     /** @param array<string, mixed> $state */
     private function record(array &$state, string $action, ?string $id, ?int $revision, ?string $actor = null): void
     {
-        $state['history'][] = ['action' => $action, 'node_id' => $id, 'revision' => $revision, 'actor' => $actor ?? $this->actor?->name, 'actor_id' => $actor === 'Example reviewer' ? null : $this->actor?->id, 'at' => now()->toIso8601String(), 'snapshot' => $id !== null ? $state['nodes'][$id] : null, 'decision' => $id !== null ? ($state['decisions'][$id.'-policy'] ?? null) : null];
+        $state['history'][] = ['action' => $action, 'node_id' => $id, 'revision' => $revision, 'actor' => $actor ?? $this->actor?->name, 'actor_id' => $actor !== null ? null : $this->actor?->id, 'at' => now()->toIso8601String(), 'snapshot' => $id !== null ? $state['nodes'][$id] : null, 'decision' => $id !== null ? ($state['decisions'][$id.'-policy'] ?? null) : null];
+    }
+
+    /** @param array<string, mixed> $state */
+    public function completionAllowed(array $state, string $id): bool
+    {
+        if (! isset($state['nodes'][$id]) || ! $this->publishable($state, $id)) {
+            return false;
+        }
+        $node = $state['nodes'][$id];
+        $children = array_filter($this->children($state, $id), fn (string $child): bool => $state['nodes'][$child]['status'] !== 'rejected');
+        if ($node['type'] === 'goal' && ($children === [] || $node['breakdown'] !== 'approved')) {
+            return false;
+        }
+        foreach ([...$children, ...$node['dependencies']] as $required) {
+            if (! $this->isCompleted($state['nodes'][$required])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    public function applyGitHubState(BacklogProject $project, string $nodeId, bool $closed, string $login): bool
+    {
+        return DB::transaction(function () use ($project, $nodeId, $closed, $login): bool {
+            Team::whereKey($project->team_id)->lockForUpdate()->firstOrFail();
+            $fresh = BacklogProject::whereKey($project->id)->lockForUpdate()->firstOrFail();
+            if ($fresh->generation !== $project->generation || ! isset($fresh->state['nodes'][$nodeId])) {
+                return false;
+            }
+            $state = $fresh->state;
+            $this->actor = null;
+            $label = 'GitHub: '.$login;
+            $complete = $this->isCompleted($state['nodes'][$nodeId]);
+            if ($closed && ! $complete) {
+                if (! $this->completionAllowed($state, $nodeId)) {
+                    return false;
+                }
+                $state['nodes'][$nodeId]['completed_revision'] = $state['nodes'][$nodeId]['revision'];
+                $state['nodes'][$nodeId]['completed_by'] = $label;
+                $state['nodes'][$nodeId]['completed_at'] = now()->toIso8601String();
+                $this->record($state, 'github_completed', $nodeId, $state['nodes'][$nodeId]['revision'], $label);
+            } elseif (! $closed && $complete) {
+                $this->reopenAffected($state, $nodeId);
+                $this->record($state, 'github_reopened', $nodeId, $state['nodes'][$nodeId]['revision'], $label);
+            } else {
+                return true;
+            }
+            $fresh->update(['state' => $state, 'version' => $fresh->version + 1]);
+
+            return true;
+        });
     }
 
     private function ensure(bool $condition, string $message): void

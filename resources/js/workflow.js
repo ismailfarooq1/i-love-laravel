@@ -1,4 +1,4 @@
-export const stateLabels = { completed: 'Completed', approved: 'Approved', proposed: 'Needs approval', needs_review: 'Review changes', rejected: 'Rejected', blocked: 'Decision needed', published: 'Published · demo' };
+export const stateLabels = { completed: 'Completed', approved: 'Approved', proposed: 'Needs approval', needs_review: 'Review changes', rejected: 'Rejected', blocked: 'Decision needed', published: 'Published' };
 export const stateColors = { completed: '#18765a', approved: '#26876c', proposed: '#a47725', needs_review: '#c36b39', rejected: '#a14d57', blocked: '#c36b39', published: '#6458b8' };
 
 export function ancestors(nodes, id) {
