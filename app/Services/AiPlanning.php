@@ -32,6 +32,10 @@ class AiPlanning
             $this->ensure(! AiAnalysis::where('backlog_project_id', $project->id)->whereIn('status', ['queued', 'processing'])->exists(), 'An analysis is already in progress for this project.');
             $parent = $input['parent_node_id'] ?? null;
             $this->checkParent($project->state, $parent);
+            if ($parent !== null) {
+                $attached = $project->state['nodes'][$parent]['document_ids'] ?? [];
+                $this->ensure(array_diff($input['document_ids'], $attached) === [], 'Attach these document versions to the selected goal before using them for AI planning.');
+            }
             $documents = array_values(array_filter($project->state['documents'], fn (array $document): bool => in_array($document['id'], $input['document_ids'], true)));
             $this->ensure(count($documents) === count($input['document_ids']), 'Select documents belonging to this project.');
             $this->ensure(array_sum(array_map(fn (array $document): int => strlen($document['content']), $documents)) <= 60000, 'Select at most 60 KB of document text per analysis. Split larger documents first.');
@@ -39,7 +43,7 @@ class AiPlanning
                 'backlog_project_id' => $project->id, 'user_id' => $user->id, 'ai_connection_id' => $connection->id,
                 'connection_revision' => $connection->revision, 'provider' => $connection->provider, 'model' => $connection->model,
                 'generation' => $project->generation, 'project_version' => $project->version, 'parent_node_id' => $parent,
-                'input' => ['instructions' => DocumentPlanner::make()->instructions(), 'schema_version' => 1, 'project' => ['name' => $project->name, 'description' => $project->description], 'parent' => $parent ? $project->state['nodes'][$parent] : null, 'documents' => $documents],
+                'input' => ['instructions' => DocumentPlanner::make()->instructions(), 'schema_version' => 2, 'project' => $parent ? ['name' => $project->name] : ['name' => $project->name, 'description' => $project->description], 'parent' => $parent ? $this->compactGoal($project->state['nodes'][$parent]) : null, 'direction' => $parent && $project->state['nodes'][$parent]['parent_id'] !== null ? $this->parentDirection($project->state['nodes'][$project->state['nodes'][$parent]['parent_id']]) : null, 'documents' => $documents],
             ]);
             AnalyzeProjectDocuments::dispatch($run->id)->afterCommit();
 
@@ -56,6 +60,10 @@ class AiPlanning
         $parent = $state['nodes'][$id] ?? null;
         $this->ensure($parent !== null && $parent['type'] === 'goal' && $parent['status'] === 'approved' && $parent['breakdown'] === 'none', 'Select an approved goal that has no smaller steps yet.');
         $this->ensure(! array_filter($state['nodes'], fn (array $node): bool => $node['parent_id'] === $id), 'This goal already has smaller steps.');
+        $this->ensure(trim($parent['supports_parent'] ?? '') !== '', 'Write and approve a short direction brief for this goal before requesting smaller steps.');
+        if ($parent['parent_id'] !== null) {
+            $this->ensure(trim($state['nodes'][$parent['parent_id']]['supports_parent'] ?? '') !== '', 'Add and approve the immediate parent’s short direction brief first.');
+        }
         $cursor = $id;
         while ($cursor !== null) {
             foreach ($state['decisions'] as $decision) {
@@ -65,6 +73,22 @@ class AiPlanning
             $this->ensure($ancestor['status'] === 'approved' && ($cursor === $id || $ancestor['breakdown'] === 'approved'), 'Approve the larger goals and their smaller steps first.');
             $cursor = $ancestor['parent_id'];
         }
+    }
+
+    /** @param array<string, mixed> $node
+     * @return array<string, mixed>
+     */
+    private function compactGoal(array $node): array
+    {
+        return ['id' => $node['id'], 'title' => $node['title'], 'description' => $node['description'], 'supports_parent' => mb_substr($node['supports_parent'] ?? '', 0, 1000), 'revision' => $node['revision']];
+    }
+
+    /** @param array<string, mixed> $node
+     * @return array<string, mixed>
+     */
+    private function parentDirection(array $node): array
+    {
+        return ['id' => $node['id'], 'title' => $node['title'], 'supports_parent' => mb_substr($node['supports_parent'] ?? '', 0, 1000), 'revision' => $node['revision']];
     }
 
     public function analyze(int $id): void
@@ -112,6 +136,7 @@ class AiPlanning
             'summary' => ['required', 'string', 'max:5000'], 'nodes' => ['present', 'array', 'max:8'],
             'nodes.*.key' => ['required', 'string', 'regex:/^[a-zA-Z0-9_-]{1,50}$/', 'distinct'],
             'nodes.*.type' => ['required', 'in:goal,task'], 'nodes.*.title' => ['required', 'string', 'max:180'],
+            'nodes.*.supports_parent' => ['required', 'string', 'max:1000'],
             'nodes.*.description' => ['required', 'string', 'max:10000'], 'nodes.*.rationale' => ['required', 'string', 'max:3000'],
             'nodes.*.criteria' => ['present', 'array', 'max:15'], 'nodes.*.criteria.*' => ['required', 'string', 'max:1000'],
             'nodes.*.assumptions' => ['present', 'array', 'max:15'], 'nodes.*.assumptions.*' => ['required', 'string', 'max:1000'],
@@ -181,6 +206,7 @@ class AiPlanning
             abort_if($project->generation !== $run->generation || $project->version !== $run->project_version, 409, 'The project changed since analysis began. Start a new analysis to use the current plan and sources.');
             $state = $project->state;
             $this->checkParent($state, $run->parent_node_id);
+            $this->ensure(($run->input['schema_version'] ?? 1) >= 2, 'This analysis predates short planning briefs. Start a new analysis before adding drafts.');
             $result = $this->validateResult($run, $run->result);
             $ids = [];
             foreach ($result['nodes'] as $node) {
@@ -190,9 +216,10 @@ class AiPlanning
                 $id = $ids[$node['key']];
                 $state['nodes'][$id] = [
                     'id' => $id, 'parent_id' => $run->parent_node_id, 'type' => $node['type'], 'template_key' => 'ai_generated', 'goal_id' => null,
-                    'title' => $node['title'], 'description' => $node['description'], 'status' => 'proposed', 'breakdown' => 'none',
+                    'title' => $node['title'], 'description' => $node['description'], 'supports_parent' => $node['supports_parent'], 'status' => 'proposed', 'breakdown' => 'none',
                     'revision' => 1, 'published_revision' => null, 'completed_revision' => null, 'completed_at' => null, 'completed_by' => null,
                     'criteria' => $node['criteria'], 'assumptions' => $node['assumptions'], 'dependencies' => array_map(fn (string $key): string => $ids[$key], $node['dependencies']),
+                    'document_ids' => $run->parent_node_id === null ? array_column($run->input['documents'], 'id') : [],
                     'evidence' => $node['evidence'], 'rationale' => $node['rationale'], 'ai_analysis_id' => $run->id,
                     'ai_provider' => $run->provider, 'ai_model' => $run->model,
                 ];

@@ -68,6 +68,7 @@ class AiPlanningTest extends TestCase
         $this->assertSame('doc-v1', $node['evidence'][0]['document_id']);
         $this->assertSame(2, $node['evidence'][0]['line']);
         $this->assertSame($run->id, $node['ai_analysis_id']);
+        $this->assertSame(['doc-v1'], $node['document_ids']);
         $this->assertSame('applied', $run->fresh()->status);
         $this->postJson(route('ai.apply', [$project, $run]), ['confirmation' => 'ADD_DRAFTS'])->assertOk()->assertJsonCount(1, 'state.nodes');
     }
@@ -76,10 +77,12 @@ class AiPlanningTest extends TestCase
     {
         [$project, $connection] = $this->fixture();
         $workflow = app(BacklogWorkflow::class);
-        $project = $workflow->command($project->team, $project->team->owner, ['version' => $project->version, 'action' => 'add_goal', 'title' => 'Welcome new starters', 'description' => 'Make day one welcoming'], $project);
+        $project = $workflow->command($project->team, $project->team->owner, ['version' => $project->version, 'action' => 'add_goal', 'title' => 'Welcome new starters', 'description' => 'Make day one welcoming', 'supports_parent' => 'Prepare new starters for day one.'], $project);
         $parent = array_key_first($project->state['nodes']);
         $this->postJson(route('ai.analyze', $project), [...$this->payload($project, $connection), 'parent_node_id' => $parent])->assertUnprocessable();
+        $project = $workflow->command($project->team, $project->team->owner, ['version' => $project->version, 'action' => 'attach_documents', 'node_id' => $parent, 'document_ids' => ['doc-v1']], $project);
         $project = $workflow->command($project->team, $project->team->owner, ['version' => $project->version, 'action' => 'approve', 'node_id' => $parent], $project);
+        $this->postJson(route('ai.analyze', $project), [...$this->payload($project, $connection), 'parent_node_id' => $parent, 'document_ids' => ['unselected']])->assertUnprocessable();
         $first = $this->response()['nodes'][0];
         $first['type'] = 'task';
         $first['criteria'] = ['Pack is ready before day one.'];
@@ -286,7 +289,7 @@ class AiPlanningTest extends TestCase
     {
         return ['summary' => 'A source-backed goal for human review.', 'nodes' => [[
             'key' => 'welcome', 'type' => 'goal', 'title' => 'Help new starters feel prepared', 'description' => 'Provide a welcome pack before day one.',
-            'rationale' => 'The selected brief requires a welcome pack.', 'criteria' => [], 'assumptions' => ['HR will coordinate the pack.'], 'dependencies' => [],
+            'supports_parent' => 'Help new starters prepare before their first day.', 'rationale' => 'The selected brief requires a welcome pack.', 'criteria' => [], 'assumptions' => ['HR will coordinate the pack.'], 'dependencies' => [],
             'evidence' => [['document_id' => 'doc-v1', 'line' => 2, 'end_line' => 2, 'quote' => 'Every new starter must receive a welcome pack before day one.']],
         ]], 'questions' => []];
     }

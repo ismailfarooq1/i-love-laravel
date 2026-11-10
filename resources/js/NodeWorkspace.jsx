@@ -1,15 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, Box, Breadcrumbs, Button, Chip, Divider, MenuItem, Paper, Stack, TextField, Typography } from '@mui/material';
+import GoalDocuments from './GoalDocuments';
 import { activityLabel, ancestors, blockers, completionInfo, isCompleted, nodeStatus, stateColors, stateLabels } from './workflow';
 
-export default function NodeWorkspace({ state, id, onSelect, command, busy, permissions, onSource, onAnalyze }) {
+export default function NodeWorkspace({ state, id, onSelect, command, busy, permissions, onSource, onAnalyze, uploadDocument, error }) {
     const node = state.nodes[id];
     const [title, setTitle] = useState(node.title);
     const [description, setDescription] = useState(node.description);
+    const [support, setSupport] = useState(node.supports_parent || '');
     const [criteria, setCriteria] = useState(node.criteria.join('\n'));
     const [dependencies, setDependencies] = useState(node.dependencies);
     const [answer, setAnswer] = useState('');
-    useEffect(() => { setTitle(node.title); setDescription(node.description); setCriteria(node.criteria.join('\n')); setDependencies(node.dependencies); setAnswer(''); }, [id, node.revision]);
+    useEffect(() => { setTitle(node.title); setDescription(node.description); setSupport(node.supports_parent || ''); setCriteria(node.criteria.join('\n')); setDependencies(node.dependencies); setAnswer(''); }, [id, node.revision]);
     const lineage = ancestors(state.nodes, id);
     const unresolved = blockers(state, id);
     const unapprovedAncestor = lineage.slice(0, -1).find(parent => parent.status !== 'approved');
@@ -18,11 +20,12 @@ export default function NodeWorkspace({ state, id, onSelect, command, busy, perm
     const children = Object.values(state.nodes).filter(child => child.parent_id === id);
     const status = nodeStatus(state, node);
     const completion = completionInfo(state, node);
-    const changed = title !== node.title || description !== node.description || criteria !== node.criteria.join('\n') || JSON.stringify(dependencies) !== JSON.stringify(node.dependencies);
+    const changed = title !== node.title || description !== node.description || support !== (node.supports_parent || '') || criteria !== node.criteria.join('\n') || JSON.stringify(dependencies) !== JSON.stringify(node.dependencies);
     const act = (action, extra = {}) => command(action, { node_id: id, ...extra });
     const canReview = !busy && !changed && permissions.review;
     const canEdit = !busy && !changed && permissions.edit;
     return <Box sx={{ maxWidth: 1160, mx: 'auto', p: { xs: 2, md: 4 } }}>
+        {error && <Alert severity="error" sx={{ mb: 3 }}>{error}</Alert>}
         {!permissions.review && <Alert severity="info" sx={{ mb: 3 }}>{permissions.edit ? 'Your Editor role can prepare and complete work. A Reviewer, Admin, or Owner must approve decisions and publication.' : 'Your Viewer role provides read-only access to this workspace.'}</Alert>}
         <Breadcrumbs sx={{ mb: 3 }}>{lineage.map(item => <Button key={item.id} size="small" onClick={() => onSelect(item.id)} color={item.id === id ? 'primary' : 'inherit'}>{item.title}</Button>)}</Breadcrumbs>
         <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}><Chip size="small" label={node.type === 'goal' ? '◇ Goal · what we want to achieve' : '☑ Task · a piece of work'} /><Typography variant="caption">Version {node.revision}</Typography><Chip size="small" label={stateLabels[status]} sx={{ color: stateColors[status], bgcolor: `${stateColors[status]}12` }} /></Stack>
@@ -33,13 +36,16 @@ export default function NodeWorkspace({ state, id, onSelect, command, busy, perm
         {node.status === 'needs_review' && <Alert severity="info" sx={{ mb: 3 }}>{node.review_reason || 'This revision needs fresh approval. Earlier decisions remain in the history.'}</Alert>}
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '1.3fr 1fr' }, gap: 3 }}>
             <Stack spacing={3}>
+                <GoalDocuments state={state} node={node} command={command} uploadDocument={uploadDocument} busy={busy} canEdit={permissions.edit && !changed} onSource={onSource} />
                 <Paper variant="outlined" sx={{ p: 3 }}>
                     <Typography variant="h6" sx={{ mb: 2 }}>The plan</Typography>
                     <Stack spacing={2}>
                         <TextField label="Title" value={title} onChange={event => setTitle(event.target.value)} inputProps={{ maxLength: 180 }} fullWidth />
+                        <TextField label={node.parent_id ? 'How this supports the larger goal' : 'Short direction brief'} value={support} onChange={event => setSupport(event.target.value)} multiline minRows={2} inputProps={{ maxLength: 1000 }} helperText={`${support.length}/1000 characters · AI receives this brief, not the full ancestor context. Changing it requires fresh approval.`} fullWidth />
+                        {node.parent_id && <Box sx={{ p: 2, bgcolor: '#f7f5fb', borderRadius: 2 }}><Typography variant="subtitle2">Immediate parent: {state.nodes[node.parent_id]?.title}</Typography><Typography variant="body2" color="text.secondary">{state.nodes[node.parent_id]?.supports_parent || 'No direction brief yet. Add one to the parent before using AI for smaller steps.'}</Typography><Button size="small" onClick={() => onSelect(node.parent_id)}>Open parent goal →</Button></Box>}
                         <TextField label="What should this achieve?" value={description} onChange={event => setDescription(event.target.value)} multiline minRows={3} fullWidth />
                         {node.type === 'task' && <><TextField label="How will we know this is done? · one item per line" value={criteria} onChange={event => setCriteria(event.target.value)} multiline minRows={3} helperText="For example: Every new starter receives their welcome pack before day one." fullWidth /><TextField select label="What needs to be finished first?" helperText="Choose tasks that must be completed before this task can finish." value={dependencies} onChange={event => setDependencies(event.target.value)} slotProps={{ select: { multiple: true } }} fullWidth>{Object.values(state.nodes).filter(item => item.type === 'task' && item.id !== id).map(item => <MenuItem key={item.id} value={item.id}>{item.title}</MenuItem>)}</TextField></>}
-                        <Button variant="outlined" disabled={busy || !permissions.edit || !changed || !title.trim() || !description.trim()} onClick={() => act('edit', { title, description, criteria: criteria.split('\n').map(line => line.trim()).filter(Boolean), dependencies })}>Save changes for review</Button>
+                        <Button variant="outlined" disabled={busy || !permissions.edit || !changed || !title.trim() || !description.trim()} onClick={() => act('edit', { title, description, supports_parent: support, criteria: criteria.split('\n').map(line => line.trim()).filter(Boolean), dependencies })}>Save changes for review</Button>
                     </Stack>
                 </Paper>
                 {decision && <Paper variant="outlined" sx={{ p: 3, borderColor: '#e7d6b7' }}>
@@ -74,7 +80,7 @@ export default function NodeWorkspace({ state, id, onSelect, command, busy, perm
                     const document = state.documents.find(item => item.id === source.document_id);
                     const superseded = state.documents.some(item => item.previous_id === source.document_id);
                     return <Box key={index} sx={{ borderLeft: '3px solid #b0a1df', pl: 2, mb: 2 }}><Typography variant="body2">“{source.quote}”</Typography><Button size="small" onClick={() => onSource(document.id)} sx={{ px: 0 }}>{document.name} · v{document.version} · line {source.line}</Button>{superseded && <Typography variant="caption" color="warning.main" display="block">A newer source version exists. Compare it before reapproving.</Typography>}</Box>;
-                }) : <Alert severity="info">No supporting document is linked. This suggestion comes from a fixed demo, rather than AI reading your documents.</Alert>}
+                }) : <Alert severity="info">No source passages are quoted for this plan. Documents attached to a goal provide context; they become evidence only when specific passages are cited.</Alert>}
                     <Divider sx={{ my: 2 }} /><Typography variant="subtitle2" sx={{ mb: 1 }}>Things we are assuming</Typography>{node.assumptions.map(item => <Typography key={item} variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>• {item}</Typography>)}
                 </Paper>
 

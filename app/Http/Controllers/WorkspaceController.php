@@ -45,6 +45,7 @@ class WorkspaceController extends Controller
             'version' => ['required', 'integer', 'min:1'],
             'file' => ['required', 'file', 'max:100', 'extensions:txt,md', 'mimetypes:text/plain,text/markdown,text/x-markdown'],
             'document_id' => ['nullable', 'string', 'max:100'],
+            'node_id' => ['sometimes', 'string', 'max:100'],
         ]);
         $file = $request->file('file');
         $content = $file->get();
@@ -55,6 +56,7 @@ class WorkspaceController extends Controller
         return response()->json($workflow->command($team, $request->user(), [
             'version' => (int) $input['version'], 'action' => 'document',
             'name' => $file->getClientOriginalName(), 'content' => $content,
+            ...isset($input['node_id']) ? ['node_id' => $input['node_id']] : [],
             'document_id' => $input['document_id'] ?? null,
         ], $projects->current($request, $team))->load('githubIssues'));
     }

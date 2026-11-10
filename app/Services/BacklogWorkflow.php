@@ -111,6 +111,7 @@ class BacklogWorkflow
                     $state['nodes'][$goalId] = $this->makeNode($goalId, null, $state, 'custom_root', $goalId);
                     $state['nodes'][$goalId]['title'] = $input['title'];
                     $state['nodes'][$goalId]['description'] = $input['description'];
+                    $state['nodes'][$goalId]['supports_parent'] = $input['supports_parent'] ?? '';
                     $state['nodes'][$goalId]['assumptions'] = ['This goal was entered by a human. No source-document analysis has been performed.'];
                     $this->record($state, 'goal_added', $goalId, 1);
                     break;
@@ -172,6 +173,7 @@ class BacklogWorkflow
                     $this->invalidate($state, $id);
                     $state['nodes'][$id] = array_replace($state['nodes'][$id], [
                         'title' => $input['title'], 'description' => $input['description'],
+                        'supports_parent' => array_key_exists('supports_parent', $input) ? ($input['supports_parent'] ?? '') : ($node['supports_parent'] ?? ''),
                         'criteria' => $input['criteria'] ?? $node['criteria'], 'dependencies' => $dependencies,
                     ]);
                     $this->record($state, 'edited', $id, $state['nodes'][$id]['revision']);
@@ -184,6 +186,21 @@ class BacklogWorkflow
                     $state['decisions'][$decisionId]['resolved_by'] = $actor->name;
                     $state['decisions'][$decisionId]['resolved_at'] = now()->toIso8601String();
                     $this->record($state, 'decision_resolved', $id, $state['nodes'][$id]['revision']);
+                    break;
+                case 'copy_parent_documents':
+                    $parentId = $state['nodes'][$id]['parent_id'];
+                    $this->ensure($parentId !== null, 'This item has no parent to copy documents from.');
+                    $parentDocuments = $state['nodes'][$parentId]['document_ids'] ?? [];
+                    $this->ensure($input['document_ids'] !== [] && array_diff($input['document_ids'], $parentDocuments) === [], 'Choose document versions attached to the immediate parent.');
+                    $this->setNodeDocuments($state, $id, array_values(array_unique([...($state['nodes'][$id]['document_ids'] ?? []), ...$input['document_ids']])));
+                    $this->record($state, 'parent_documents_copied', $id, $state['nodes'][$id]['revision']);
+                    $last = array_key_last($state['history']);
+                    $state['history'][$last]['source_parent_id'] = $parentId;
+                    $state['history'][$last]['source_parent_revision'] = $state['nodes'][$parentId]['revision'];
+                    $state['history'][$last]['copied_document_ids'] = $input['document_ids'];
+                    break;
+                case 'attach_documents':
+                    $this->setNodeDocuments($state, $id, $input['document_ids']);
                     break;
                 case 'document':
                     $this->addDocument($state, $input);
@@ -269,6 +286,7 @@ class BacklogWorkflow
             'title' => $template['title'], 'description' => $template['description'],
             'status' => 'proposed', 'breakdown' => 'none', 'revision' => 1, 'published_revision' => null,
             'completed_revision' => null, 'completed_at' => null, 'completed_by' => null,
+            'document_ids' => [], 'supports_parent' => '',
             'criteria' => $template['criteria'] ?? [], 'dependencies' => array_map(fn (string $dependency): string => $goalId !== null ? $goalId.':'.$dependency : $dependency, $template['dependencies'] ?? []), 'evidence' => $evidence,
             'assumptions' => [$template['assumption'] ?? 'This breakdown is a scripted proposal. Review whether it fits your intended scope.', ...($scriptedSource ? [] : ['This generic scripted proposal has no source evidence. Adapt it to the goal before approving.'])],
         ];
@@ -391,6 +409,11 @@ class BacklogWorkflow
      */
     private function addDocument(array &$state, array $input): void
     {
+        $goalId = $input['node_id'] ?? null;
+        if ($goalId !== null) {
+            $this->ensure(isset($state['nodes'][$goalId]), 'Choose a goal or task in this project.');
+        }
+        $goalRevision = $goalId !== null ? $state['nodes'][$goalId]['revision'] : null;
         $previous = null;
         if (! empty($input['document_id'])) {
             foreach ($state['documents'] as $document) {
@@ -407,17 +430,57 @@ class BacklogWorkflow
         if ($previous !== null) {
             $affected = [];
             foreach ($state['nodes'] as $node) {
-                if (in_array($previous['id'], array_column($node['evidence'], 'document_id'), true)) {
+                if (in_array($previous['id'], [...array_column($node['evidence'], 'document_id'), ...($node['document_ids'] ?? [])], true)) {
                     $affected[] = $node['id'];
                 }
             }
             foreach ($affected as $id) {
-                if (! in_array($state['nodes'][$id]['parent_id'], $affected, true)) {
+                $cursor = $id;
+                while ($cursor !== null && $cursor !== $goalId) {
+                    $cursor = $state['nodes'][$cursor]['parent_id'];
+                }
+                if ($goalId !== null && $cursor === $goalId) {
+                    continue;
+                }
+                if ($id !== $goalId && ! in_array($state['nodes'][$id]['parent_id'], $affected, true)) {
                     $this->invalidate($state, $id, 'A source document has a new version. Compare the original evidence with the latest source before approving.');
                 }
             }
         }
-        $this->record($state, 'document_added', null, null);
+        if ($goalId !== null) {
+            $attachments = $state['nodes'][$goalId]['document_ids'] ?? [];
+            if ($previous !== null) {
+                $attachments = array_values(array_diff($attachments, [$previous['id']]));
+            }
+            $this->setNodeDocuments($state, $goalId, [...$attachments, $documentId], $state['nodes'][$goalId]['revision'] === $goalRevision);
+        }
+        $this->record($state, 'document_added', $goalId, $goalId ? $state['nodes'][$goalId]['revision'] : null);
+    }
+
+    /** @param array<string, mixed> $state
+     * @param  list<string>  $documentIds
+     */
+    private function setNodeDocuments(array &$state, string $id, array $documentIds, bool $invalidate = true): void
+    {
+        $this->ensure(isset($state['nodes'][$id]), 'Choose a goal or task in this project.');
+        $this->ensure(count($documentIds) <= 50 && count($documentIds) === count(array_unique($documentIds)), 'Choose up to 50 distinct document versions.');
+        $available = array_column($state['documents'], 'id');
+        foreach ($documentIds as $documentId) {
+            $this->ensure(in_array($documentId, $available, true), 'Select documents belonging to this project.');
+        }
+        $current = $state['nodes'][$id]['document_ids'] ?? [];
+        $compare = $documentIds;
+        sort($current);
+        sort($compare);
+        if ($current === $compare) {
+            return;
+        }
+        if ($invalidate) {
+            $this->record($state, 'revision_superseded', $id, $state['nodes'][$id]['revision']);
+            $this->invalidate($state, $id, 'Documents attached to this plan changed. Review this goal and its smaller steps against the updated supporting material.', true);
+        }
+        $state['nodes'][$id]['document_ids'] = array_values($documentIds);
+        $this->record($state, 'goal_documents_updated', $id, $state['nodes'][$id]['revision']);
     }
 
     /** @param array<string, mixed> $state */
