@@ -109,9 +109,12 @@ class GitHubPublishing
 
     public function publish(int $id): void
     {
-        $publication = GitHubPublication::findOrFail($id);
+        $publication = GitHubPublication::find($id);
+        if (! $publication) {
+            return;
+        }
         Cache::lock('github-project-'.$publication->backlog_project_id, 180)->block(5, function () use ($publication): void {
-            if ($publication->fresh()->status === 'published') {
+            if (! $publication->fresh() || $publication->fresh()->status === 'published') {
                 return;
             }
             try {

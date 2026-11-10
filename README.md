@@ -25,7 +25,7 @@ Create multiple top-level goals, break them into smaller outcomes, and refine th
 The intended destination is a reviewed GitHub backlog, with enough context for a human teammate—and eventually an agent—to pick up a bounded piece of work.
 
 > [!IMPORTANT]
-> **This is a working local prototype.** Planning, reviews, document storage, completion tracking, and publication previews are persisted in Laravel. AI generation is scripted; no real model analyzes your uploads. Connecting GitHub enables **real issue publishing and completion synchronization**, subject to explicit human review. Historical simulated batches remain labeled as simulations.
+> **This is a working local prototype.** Planning, reviews, document storage, completion tracking, and publication previews are persisted in Laravel. Real AI document analysis uses the Laravel AI SDK with OpenAI, Claude, or Gemini and a team-supplied API key. Document text is sent only after explicit selection and consent. Prepared demo scenarios remain available separately. Connecting GitHub enables **real issue publishing and completion synchronization**, subject to explicit human review. Historical simulated batches remain labeled as simulations.
 
 ## What you can do today
 
@@ -135,7 +135,23 @@ composer run dev
 
 Open the address printed by the Laravel development server. The development command starts Laravel, Vite, the queue listener, and the log viewer.
 
-**No AI API key is required.** GitHub is optional; configure the applications below to enable real publishing.
+**Manual planning needs no API key.** Real document analysis requires a team AI connection; GitHub is optional and configured separately.
+
+## Set up real AI planning
+
+An Owner or Admin opens a project’s **AI planning → AI connections**, chooses OpenAI, Claude (Anthropic), or Gemini, and saves the team’s provider API key and model. The suggested model comes from the installed SDK’s lower-cost model setting; administrators may choose another model supported by their provider account. Chat subscriptions and API access are separate. The provider bills the team directly. Keys are encrypted using `APP_KEY`, hidden from responses, and never included in queued job payloads. Keep `APP_KEY` stable. Removing a key disables new analyses across the team; it preserves past results.
+
+1. Add your own brief or notes in **Documents**. Saving a document does not call AI.
+2. In **AI planning**, select a connection and up to ten document versions (60 KB combined UTF-8 text).
+3. Choose a new main goal, or smaller steps for a goal whose current version and ancestors are approved. Goals with existing smaller steps or unanswered questions cannot be expanded again.
+4. Review what will be sent and give explicit consent. The request includes the project name/description, selected documents, and the chosen goal’s details when expanding a goal. The assistant has no tools or GitHub access.
+5. A background job requests one main goal or up to eight direct smaller steps. Each stage waits for human review before further decomposition.
+6. Review the saved summary, rationale, assumptions, checklist, dependency links, and questions. Evidence document IDs, line ranges, and verbatim quotes are checked server-side. Invalid references, malformed results, and dependency cycles are rejected. Quote matching does not prove an inference is correct.
+7. Choose **Add suggestions as drafts**, then review, edit, answer questions, and approve using the normal workflow. Draft import never approves or publishes work. Project changes make outstanding results stale; run analysis again against the current version.
+
+The installed `laravel/ai` SDK handles all three providers through one structured planning agent. Analyses preserve the initiating user, provider/model, instructions, selected document snapshots, response, token usage, and timestamps. Only one queued or running analysis per project is allowed. Jobs have a single queue attempt, a 60-second worker timeout, a 45-second SDK request timeout, and an 8,000-token output limit. Provider-specific rate-limit handling may retry a rejected request. There is no automatic provider fallback. Costs are not estimated from token counts; consult your provider’s billing.
+
+Run `php artisan migrate --no-interaction`, then keep the database queue worker running (`php artisan queue:work --tries=1 --timeout=60`; retry interval must exceed 60 seconds). Restart workers after code changes. No conversation-storage migration is needed: this assistant is stateless and Tracework persists its own analysis records. API failures and interrupted jobs leave the project unchanged; start a new analysis explicitly. Automated tests fake the SDK and outbound HTTP; live model verification requires your own configured key.
 
 ## Connect GitHub
 
@@ -193,12 +209,12 @@ Automated integration tests fake GitHub HTTP traffic. A live acceptance check re
 1. **Sign in and explore the example.** The support portal scenario includes approved goals, draft tasks, an unresolved attachment policy, and an independent staff workflow.
 2. **Select a node.** Its overlay shows the proposal, evidence, available actions, completion blockers, and history. Use **Close** or **Escape** to return to the map.
 3. **Resolve a question.** Review the suggested attachment policy, accept it or enter your own answer, then approve the affected breakdown.
-4. **Add another goal.** Choose **+ Add goal**, enter an objective, approve it, and request a scripted breakdown. Review and adapt the generic suggestions to your goal.
+4. **Add another goal.** Choose **+ Add goal**, enter an objective, approve it, and open **AI planning** to request smaller steps from selected documents. Read the evidence, add drafts, and approve the plan when ready.
 5. **Follow the gates.** Approve parents before children. Complete prerequisite tasks and child nodes before marking their dependents and parents complete.
 6. **Preview publication.** In **GitHub publishing**, select eligible nodes, prepare a batch, inspect its contents, and approve real publication. GitHub must be connected first; otherwise planning remains available.
 
 > [!NOTE]
-> The support portal example uses fixed source references. New custom goals receive generic scripted breakdowns, without invented document evidence. Uploaded text is saved for inspection; it is not interpreted by a real AI model.
+> The support portal example uses fixed source references. AI planning analyzes only the document versions you select. Quotes are checked against their saved line ranges, but humans must still check the interpretation and assumptions.
 
 **Reset workspace** offers a fresh workspace or the example scenario. Resetting requires confirmation and replaces saved documents, edits, decisions, approvals, and simulated publication batches. Projects with published issues or an uncertain creation attempt cannot be reset; create another project instead.
 
@@ -268,11 +284,11 @@ Find the numeric team ID in **Team & access**. The command refuses to overwrite 
 
 ## Prototype boundaries
 
-AI generation remains simulated. GitHub publishing uses real API calls after configuration and approval. PDF and Word ingestion, real repository inspection, human task assignment, and agent execution are not implemented. Production deployment still requires environment, mail delivery, operational monitoring, and performance work.
+Prepared examples remain simulated; the AI planning screen uses real provider APIs after team configuration. GitHub publishing uses real API calls after configuration and approval. PDF and Word ingestion, real repository inspection, human task assignment, and agent execution are not implemented. Production deployment still requires environment, mail delivery, operational monitoring, and performance work.
 
 ## What’s next
 
-- [ ] Real AI document analysis with structured, source-linked proposals.
+- [x] Real AI document analysis with structured, source-linked proposals.
 - [x] GitHub App and personal OAuth authorization, real issue publishing, native hierarchy, and completion synchronization.
 - [x] User accounts, team permissions, and tenant isolation.
 - [ ] Human task assignment.

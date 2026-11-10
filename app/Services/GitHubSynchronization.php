@@ -36,8 +36,8 @@ class GitHubSynchronization
     public function synchronize(int $projectId, string $actor = 'repository user'): void
     {
         Cache::lock('github-project-'.$projectId, 180)->block(5, function () use ($projectId, $actor): void {
-            $project = BacklogProject::findOrFail($projectId);
-            if (! $project->github_connection_id) {
+            $project = BacklogProject::find($projectId);
+            if (! $project || ! $project->github_connection_id) {
                 return;
             }
             $remote = [];

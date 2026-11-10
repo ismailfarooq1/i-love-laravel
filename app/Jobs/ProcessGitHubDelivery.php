@@ -42,7 +42,7 @@ class ProcessGitHubDelivery implements ShouldQueue
                 $issues = GitHubIssue::where('github_id', (string) ($payload['issue']['id'] ?? ''))->with('project')->get();
                 foreach ($issues as $issue) {
                     $project = $issue->project;
-                    if ($project->generation !== $issue->generation || $project->repository_id !== (string) ($payload['repository']['id'] ?? '') || ! $project->github_connection_id) {
+                    if (! $project || $project->generation !== $issue->generation || $project->repository_id !== (string) ($payload['repository']['id'] ?? '') || ! $project->github_connection_id) {
                         continue;
                     }
                     $connection = GitHubConnection::findOrFail($issue->github_connection_id);

@@ -25,6 +25,19 @@ class BacklogWorkflowTest extends TestCase
         $this->assertDatabaseCount('backlog_projects', 0);
     }
 
+    public function test_first_manual_goal_can_be_saved_without_documents(): void
+    {
+        $this->authenticateOwner();
+        $projectId = $this->postJson(route('projects.store'), ['name' => 'Employee onboarding', 'connection_mode' => 'later'])->assertCreated()->json('id');
+        $response = $this->postJson(route('workspace.commands'), ['action' => 'add_goal', 'version' => 1, 'title' => 'Welcome new starters', 'description' => 'Help each new starter prepare for day one.'], ['X-Project-ID' => $projectId])->assertOk()->assertJsonCount(1, 'state.nodes')->assertJsonCount(0, 'state.documents');
+        $node = array_values($response->json('state.nodes'))[0];
+        $this->assertSame('Welcome new starters', $node['title']);
+        $this->assertSame('proposed', $node['status']);
+        $this->assertSame([], $node['evidence']);
+        $this->assertNull($node['parent_id']);
+        $this->getJson(route('workspace.show'), ['X-Project-ID' => $projectId])->assertOk()->assertJsonPath('state.nodes.'.$node['id'].'.title', 'Welcome new starters');
+    }
+
     public function test_example_is_persisted_with_a_blocked_and_an_independent_branch(): void
     {
         $this->authenticateOwner();

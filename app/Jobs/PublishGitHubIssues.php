@@ -27,7 +27,10 @@ class PublishGitHubIssues implements ShouldQueue
     public function handle(GitHubPublishing $publishing): void
     {
         $publishing->publish($this->publicationId);
-        GitHubSynchronization::queueLocal(GitHubPublication::findOrFail($this->publicationId)->project->fresh());
+        $publication = GitHubPublication::find($this->publicationId);
+        if ($publication) {
+            GitHubSynchronization::queueLocal($publication->project->fresh());
+        }
     }
 
     public function failed(?Throwable $exception): void

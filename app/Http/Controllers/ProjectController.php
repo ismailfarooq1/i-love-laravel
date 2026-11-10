@@ -3,11 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Models\BacklogProject;
+use App\Models\Team;
 use App\Services\DemoScenario;
 use App\Services\ProjectAccess;
 use App\Services\TeamAccess;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -43,5 +46,30 @@ class ProjectController extends Controller
         $request->session()->put('project_id.'.$project->team_id, $project->id);
 
         return response()->json(['project_id' => $project->id]);
+    }
+
+    public function destroy(Request $request, BacklogProject $project, ProjectAccess $access): JsonResponse
+    {
+        $access->authorize($project, 'manageMembers');
+        $input = $request->validate(['confirmation' => ['required', 'string', 'max:100'], 'version' => ['required', 'integer', 'min:1']]);
+        $deleted = Cache::lock('github-project-'.$project->id, 180)->get(function () use ($request, $project, $access, $input): bool {
+            return DB::transaction(function () use ($request, $project, $access, $input): bool {
+                Team::whereKey($project->team_id)->lockForUpdate()->firstOrFail();
+                $locked = BacklogProject::whereKey($project->id)->lockForUpdate()->firstOrFail();
+                $access->authorize($locked, 'manageMembers');
+                abort_unless($input['confirmation'] === $locked->name, 422, 'Type the project name exactly to confirm permanent deletion.');
+                abort_if($input['version'] !== $locked->version, 409, 'The project changed. Refresh and review it before deleting.');
+                abort_if($locked->publications()->whereIn('status', ['queued', 'publishing'])->exists(), 409, 'Wait for the current GitHub publication to finish before deleting this project.');
+                $locked->delete();
+                if ((string) $request->session()->get('project_id.'.$locked->team_id) === (string) $locked->id) {
+                    $request->session()->forget('project_id.'.$locked->team_id);
+                }
+
+                return true;
+            });
+        });
+        abort_unless($deleted, 409, 'GitHub publishing or synchronization is running. Please try deleting again when it finishes.');
+
+        return response()->json(['message' => 'Project permanently deleted.']);
     }
 }

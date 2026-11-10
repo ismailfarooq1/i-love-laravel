@@ -1,8 +1,9 @@
 *.log
 .DS_Store
 .env
-.env.backup
-.env.production
+.env.*
+!.env.example
+!.env.*.example
 .phpactor.json
 .phpunit.result.cache
 /.fleet
@@ -25,3 +26,21 @@
 Homestead.json
 Homestead.yaml
 Thumbs.db
+
+# Local credentials and private keys
+*.pem
+*.key
+/secrets/
+
+# Local database exports and backups
+/database/*.sql
+/database/*.dump
+/backups/
+
+# Test coverage and temporary editor files
+/coverage/
+.phpunit-watcher.yml
+*.swp
+*.swo
+*~
+*.orig

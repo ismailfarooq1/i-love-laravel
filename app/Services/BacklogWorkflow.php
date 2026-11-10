@@ -119,6 +119,7 @@ class BacklogWorkflow
                     $state['nodes']['root'] = $this->makeNode('root', null, $state);
                     break;
                 case 'expand':
+                    $this->ensure(isset($this->scenario->templates()[$state['nodes'][$id]['template_key'] ?? $id]), 'Use AI analysis to suggest steps for this AI-generated goal.');
                     $this->ensure($state['nodes'][$id]['type'] === 'goal', 'Only goals can be decomposed.');
                     $this->ensure($state['nodes'][$id]['status'] === 'approved' && $this->ancestorsApproved($state, $id), 'Approve this goal and its ancestors before requesting a breakdown.');
                     $this->ensure($state['nodes'][$id]['breakdown'] === 'none', 'Review the existing breakdown before continuing.');
@@ -249,8 +250,8 @@ class BacklogWorkflow
     {
         $templateKey ??= $id;
         $template = $this->scenario->templates()[$templateKey];
-        $document = $state['documents'][0];
-        $scriptedSource = isset($template['line']) && $document['content'] === DemoScenario::DOCUMENT;
+        $document = $state['documents'][0] ?? null;
+        $scriptedSource = isset($template['line']) && $document !== null && $document['content'] === DemoScenario::DOCUMENT;
         $evidence = $scriptedSource ? [['document_id' => $document['id'], 'line' => $template['line'], 'quote' => explode("\n", $document['content'])[$template['line'] - 1]]] : [];
         if ($template['question'] ?? false) {
             $state['decisions'][$id.'-policy'] = [

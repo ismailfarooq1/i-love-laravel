@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\AiPlanningController;
 use App\Http\Controllers\AuthenticationController;
 use App\Http\Controllers\GitHubConnectionController;
 use App\Http\Controllers\GitHubPublicationController;
@@ -42,8 +43,14 @@ Route::middleware(['auth', 'auth.session', 'verified'])->group(function (): void
     Route::get('/invitations/{token}', fn (string $token): View => view('auth', ['screen' => 'invitation', 'token' => $token, 'email' => '']))->name('invitations.show');
     Route::get('/invitations/{token}/details', [TeamInvitationController::class, 'show'])->name('invitations.details');
     Route::post('/invitations/{token}', [TeamInvitationController::class, 'update'])->name('invitations.accept');
+    Route::get('/projects/{project}/ai', [AiPlanningController::class, 'index'])->name('ai.index');
+    Route::put('/projects/{project}/ai/connection', [AiPlanningController::class, 'connection'])->middleware('throttle:10,1')->name('ai.connection');
+    Route::delete('/projects/{project}/ai/connection/{connection}', [AiPlanningController::class, 'disconnect'])->name('ai.disconnect');
+    Route::post('/projects/{project}/ai/analyses', [AiPlanningController::class, 'store'])->middleware('throttle:5,1')->name('ai.analyze');
+    Route::post('/projects/{project}/ai/analyses/{analysis}/apply', [AiPlanningController::class, 'update'])->name('ai.apply');
     Route::get('/projects', [ProjectController::class, 'index'])->name('projects.index');
     Route::post('/projects', [ProjectController::class, 'store'])->name('projects.store');
+    Route::delete('/projects/{project}', [ProjectController::class, 'destroy'])->name('projects.destroy');
     Route::post('/projects/{project}/select', [ProjectController::class, 'update'])->name('projects.select');
     Route::get('/github/callback', [GitHubConnectionController::class, 'callback'])->name('github.callback');
     Route::get('/github/installed', [GitHubConnectionController::class, 'installed'])->name('github.installed');
