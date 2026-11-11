@@ -3,12 +3,10 @@
 namespace App\Ai\Agents;
 
 use Illuminate\Contracts\JsonSchema\JsonSchema;
-use Laravel\Ai\Attributes\MaxTokens;
 use Laravel\Ai\Contracts\Agent;
 use Laravel\Ai\Contracts\HasStructuredOutput;
 use Laravel\Ai\Promptable;
 
-#[MaxTokens(8000)]
 class DocumentPlanner implements Agent, HasStructuredOutput
 {
     use Promptable;

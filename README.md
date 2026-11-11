@@ -25,7 +25,7 @@ Create multiple top-level goals, break them into smaller outcomes, and refine th
 The intended destination is a reviewed GitHub backlog, with enough context for a human teammate—and eventually an agent—to pick up a bounded piece of work.
 
 > [!IMPORTANT]
-> **This is a working local prototype.** Planning, reviews, document storage, completion tracking, and publication previews are persisted in Laravel. Real AI document analysis uses the Laravel AI SDK with OpenAI, Claude, or Gemini and a team-supplied API key. Document text is sent only after explicit selection and consent. Prepared demo scenarios remain available separately. Connecting GitHub enables **real issue publishing and completion synchronization**, subject to explicit human review. Historical simulated batches remain labeled as simulations.
+> **This is a working local prototype.** Planning, reviews, document storage, completion tracking, and publication previews are persisted in Laravel. Real AI document analysis uses a personal ChatGPT plan connection and the Laravel AI SDK’s planning schema. Document text is sent only after explicit selection and consent. Prepared demo scenarios remain available separately. Connecting GitHub enables **real issue publishing and completion synchronization**, subject to explicit human review. Historical simulated batches remain labeled as simulations.
 
 ## What you can do today
 
@@ -135,11 +135,17 @@ composer run dev
 
 Open the address printed by the Laravel development server. The development command starts Laravel, Vite, the queue listener, and the log viewer.
 
-**Manual planning needs no API key.** Real document analysis requires a team AI connection; GitHub is optional and configured separately.
+**Manual planning needs no API key.** Real document analysis requires your own ChatGPT connection; GitHub is optional and configured separately.
 
 ## Set up real AI planning
 
-An Owner or Admin opens a project’s **AI planning → AI connections**, chooses OpenAI, Claude (Anthropic), or Gemini, and saves the team’s provider API key and model. The suggested model comes from the installed SDK’s lower-cost model setting; administrators may choose another model supported by their provider account. Chat subscriptions and API access are separate. The provider bills the team directly. Keys are encrypted using `APP_KEY`, hidden from responses, and never included in queued job payloads. Keep `APP_KEY` stable. Removing a key disables new analyses across the team; it preserves past results.
+**Continue with ChatGPT:** Open **AI planning**, confirm that your browser is on the computer running Tracework, then authorize ChatGPT plan usage. This uses the same dynamic-registration / PKCE / loopback approach as LearnHarness. Connections are private to their owner and current team. API-key and OpenRouter connection methods have been removed; existing analysis history remains.
+
+Keep Laravel running on `127.0.0.1:8000`. The OAuth callback is `http://127.0.0.1:8000/auth/chatgpt/callback`; set `CHATGPT_CALLBACK_PORT` if your local server uses another port. Keep `APP_URL` set to the exact address you use to open Tracework (including ngrok). After local authorization, the browser returns to the original authenticated application session. GitHub keeps its existing callback. A remote visitor on another computer cannot complete this local flow.
+
+Load available models and choose one after connecting. Tokens are encrypted using `APP_KEY`, refreshed under a lock, and never returned to the frontend. Preserve `APP_KEY` and `storage/app/private/chatgpt-host-id` across restarts. OAuth uses state, nonce, PKCE and verified OpenAI identity signatures. Callback results expire after five minutes and require the original browser session before they become active. Reconnect retains the account registration. Disconnect attempts remote revocation and clears local tokens; if revocation fails, disconnect Tracework in ChatGPT settings too.
+
+Eligible requests use your ChatGPT plan; extra credits and limits are managed in [ChatGPT usage settings](https://chatgpt.com/settings/usage). No API-key fallback occurs. This is a local integration, not a hosted-service subscription integration. See [OpenAI’s documentation](https://developers.openai.com/siwc/token-sharing-open-source).
 
 1. Add your own brief or notes in **Documents**. Saving a document does not call AI.
 2. In **AI planning**, select a connection and up to ten document versions (60 KB combined UTF-8 text).
@@ -149,9 +155,9 @@ An Owner or Admin opens a project’s **AI planning → AI connections**, choose
 6. Review the saved summary, rationale, assumptions, checklist, dependency links, and questions. Evidence document IDs, line ranges, and verbatim quotes are checked server-side. Invalid references, malformed results, and dependency cycles are rejected. Quote matching does not prove an inference is correct.
 7. Choose **Add suggestions as drafts**, then review, edit, answer questions, and approve using the normal workflow. Draft import never approves or publishes work. Project changes make outstanding results stale; run analysis again against the current version.
 
-The installed `laravel/ai` SDK handles all three providers through one structured planning agent. Analyses preserve the initiating user, provider/model, instructions, selected document snapshots, response, token usage, and timestamps. Only one queued or running analysis per project is allowed. Jobs have a single queue attempt, a 60-second worker timeout, a 45-second SDK request timeout, and an 8,000-token output limit. Provider-specific rate-limit handling may retry a rejected request. There is no automatic provider fallback. Costs are not estimated from token counts; consult your provider’s billing.
+The Laravel AI SDK supplies the planning instructions and JSON schema. A dedicated ChatGPT adapter sends streamed Responses requests with `store: false`, validates terminal completion, and then passes results through existing source and hierarchy validation. Analyses retain their source snapshots, model, usage and timestamps. Requests do not retry automatically. A ChatGPT request has a 40-second transport timeout and a bounded response size; no unsupported output-token cap is sent. Only one queued/running analysis per project is allowed.
 
-Run `php artisan migrate --no-interaction`, then keep the database queue worker running (`php artisan queue:work --tries=1 --timeout=60`; retry interval must exceed 60 seconds). Restart workers after code changes. No conversation-storage migration is needed: this assistant is stateless and Tracework persists its own analysis records. API failures and interrupted jobs leave the project unchanged; start a new analysis explicitly. Automated tests fake the SDK and outbound HTTP; live model verification requires your own configured key.
+Run `php artisan migrate --no-interaction`, then keep the database queue worker running (`php artisan queue:work --tries=1 --timeout=120`; retry interval is at least 180 seconds). Restart workers after code changes. No conversation-storage migration is needed: this assistant is stateless and Tracework persists its own analysis records. API failures and interrupted jobs leave the project unchanged; start a new analysis explicitly. Automated tests fake outbound HTTP; live verification requires authorizing your own ChatGPT account.
 
 ## Connect GitHub
 

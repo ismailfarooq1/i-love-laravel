@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AiPlanningController;
 use App\Http\Controllers\AuthenticationController;
+use App\Http\Controllers\ChatGptConnectionController;
 use App\Http\Controllers\GitHubConnectionController;
 use App\Http\Controllers\GitHubPublicationController;
 use App\Http\Controllers\GitHubWebhookController;
@@ -12,6 +13,8 @@ use App\Http\Controllers\TeamMemberController;
 use App\Http\Controllers\WorkspaceController;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Route;
+
+Route::get('/auth/chatgpt/callback', [ChatGptConnectionController::class, 'callback'])->name('chatgpt.callback');
 
 Route::middleware('guest')->group(function (): void {
     Route::get('/login', [AuthenticationController::class, 'show'])->name('login');
@@ -43,8 +46,11 @@ Route::middleware(['auth', 'auth.session', 'verified'])->group(function (): void
     Route::get('/invitations/{token}', fn (string $token): View => view('auth', ['screen' => 'invitation', 'token' => $token, 'email' => '']))->name('invitations.show');
     Route::get('/invitations/{token}/details', [TeamInvitationController::class, 'show'])->name('invitations.details');
     Route::post('/invitations/{token}', [TeamInvitationController::class, 'update'])->name('invitations.accept');
+    Route::get('/chatgpt/finish', [ChatGptConnectionController::class, 'finish'])->name('chatgpt.finish');
+    Route::post('/projects/{project}/chatgpt/connect', [ChatGptConnectionController::class, 'store'])->middleware('throttle:5,1')->name('chatgpt.connect');
+    Route::get('/projects/{project}/chatgpt/{connection}/models', [ChatGptConnectionController::class, 'models'])->name('chatgpt.models');
+    Route::patch('/projects/{project}/chatgpt/{connection}', [ChatGptConnectionController::class, 'update'])->name('chatgpt.update');
     Route::get('/projects/{project}/ai', [AiPlanningController::class, 'index'])->name('ai.index');
-    Route::put('/projects/{project}/ai/connection', [AiPlanningController::class, 'connection'])->middleware('throttle:10,1')->name('ai.connection');
     Route::delete('/projects/{project}/ai/connection/{connection}', [AiPlanningController::class, 'disconnect'])->name('ai.disconnect');
     Route::post('/projects/{project}/ai/analyses', [AiPlanningController::class, 'store'])->middleware('throttle:5,1')->name('ai.analyze');
     Route::post('/projects/{project}/ai/analyses/{analysis}/apply', [AiPlanningController::class, 'update'])->name('ai.apply');

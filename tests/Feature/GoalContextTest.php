@@ -2,13 +2,13 @@
 
 namespace Tests\Feature;
 
-use App\Ai\Agents\DocumentPlanner;
 use App\Models\AiAnalysis;
 use App\Models\AiConnection;
 use App\Models\BacklogProject;
 use App\Models\Team;
 use App\Services\AiPlanning;
 use Illuminate\Foundation\Testing\LazilyRefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
@@ -22,8 +22,8 @@ class GoalContextTest extends TestCase
         $project = $this->fixture();
         Queue::fake();
         $connection = AiConnection::factory()->create(['team_id' => $project->team_id]);
-        DocumentPlanner::fake([['summary' => 'No further evidence is available.', 'nodes' => [], 'questions' => []]])->preventStrayPrompts();
-        $runId = $this->postJson(route('ai.analyze', $project), ['version' => $project->version, 'connection_id' => $connection->id, 'parent_node_id' => 'leaf', 'document_ids' => ['brief-1'], 'consent' => true])->assertAccepted()->json('id');
+        $this->fakeChatGpt(['summary' => 'No further evidence is available.', 'nodes' => [], 'questions' => []]);
+        $runId = $this->postJson(route('ai.analyze', $project), ['version' => $project->version, 'connection_id' => $connection->id, 'connection_revision' => $connection->revision, 'parent_node_id' => 'leaf', 'document_ids' => ['brief-1'], 'consent' => true])->assertAccepted()->json('id');
         $run = AiAnalysis::findOrFail($runId);
         $this->assertSame(['id', 'title', 'supports_parent', 'revision'], array_keys($run->input['direction']));
         $this->assertSame('middle', $run->input['direction']['id']);
@@ -31,14 +31,19 @@ class GoalContextTest extends TestCase
         $this->assertSame(['id', 'title', 'description', 'supports_parent', 'revision'], array_keys($run->input['parent']));
         app(AiPlanning::class)->analyze($runId);
         $this->assertSame('ready', $run->fresh()->status);
-        DocumentPlanner::assertPrompted(function ($prompt): bool {
-            return str_contains($prompt->prompt, 'Keep the welcome pack useful before arrival.')
-                && str_contains($prompt->prompt, 'Prepare the contents of the welcome pack.')
-                && ! str_contains($prompt->prompt, 'SECRET_PARENT_DESCRIPTION')
-                && ! str_contains($prompt->prompt, 'SECRET_GRANDPARENT_BRIEF')
-                && ! str_contains($prompt->prompt, 'SECRET_PARENT_EVIDENCE')
-                && ! str_contains($prompt->prompt, 'SECRET_PROJECT_DESCRIPTION')
-                && ! str_contains($prompt->prompt, 'Unselected source');
+        Http::assertSent(function ($request): bool {
+            if (! str_ends_with($request->url(), '/responses')) {
+                return false;
+            }
+            $prompt = $request['input'][0]['content'];
+
+            return str_contains($prompt, 'Keep the welcome pack useful before arrival.')
+                && str_contains($prompt, 'Prepare the contents of the welcome pack.')
+                && ! str_contains($prompt, 'SECRET_PARENT_DESCRIPTION')
+                && ! str_contains($prompt, 'SECRET_GRANDPARENT_BRIEF')
+                && ! str_contains($prompt, 'SECRET_PARENT_EVIDENCE')
+                && ! str_contains($prompt, 'SECRET_PROJECT_DESCRIPTION')
+                && ! str_contains($prompt, 'Unselected source');
         });
     }
 
@@ -62,7 +67,7 @@ class GoalContextTest extends TestCase
         $project->update(['state' => $state]);
         Queue::fake();
         $connection = AiConnection::factory()->create(['team_id' => $project->team_id]);
-        $this->postJson(route('ai.analyze', $project), ['version' => $project->version, 'connection_id' => $connection->id, 'parent_node_id' => 'leaf', 'document_ids' => ['brief-1'], 'consent' => true])->assertUnprocessable();
+        $this->postJson(route('ai.analyze', $project), ['version' => $project->version, 'connection_id' => $connection->id, 'connection_revision' => $connection->revision, 'parent_node_id' => 'leaf', 'document_ids' => ['brief-1'], 'consent' => true])->assertUnprocessable();
         $this->assertDatabaseCount('ai_analyses', 0);
         Queue::assertNothingPushed();
     }

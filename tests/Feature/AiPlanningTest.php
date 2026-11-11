@@ -2,7 +2,6 @@
 
 namespace Tests\Feature;
 
-use App\Ai\Agents\DocumentPlanner;
 use App\Jobs\AnalyzeProjectDocuments;
 use App\Models\AiAnalysis;
 use App\Models\AiConnection;
@@ -25,18 +24,16 @@ class AiPlanningTest extends TestCase
 {
     use LazilyRefreshDatabase;
 
-    public function test_team_keys_are_encrypted_hidden_and_cannot_be_managed_by_other_tenants(): void
+    public function test_credentials_are_encrypted_hidden_and_other_tenants_cannot_access_them(): void
     {
-        [$project] = $this->fixture();
-        $this->putJson(route('ai.connection', $project), ['provider' => 'anthropic', 'model' => 'test-claude', 'api_key' => 'a-private-test-api-key'])->assertOk()->assertJsonMissingPath('api_key');
-        $connection = AiConnection::where('provider', 'anthropic')->firstOrFail();
-        $stored = DB::table('ai_connections')->where('id', $connection->id)->value('api_key');
-        $this->assertNotSame('a-private-test-api-key', $stored);
-        $this->assertSame('a-private-test-api-key', $connection->api_key);
-        $this->getJson(route('ai.index', $project))->assertOk()->assertDontSee('a-private-test-api-key')->assertJsonMissingPath('connections.0.api_key');
+        [$project, $connection] = $this->fixture();
+        $stored = DB::table('ai_connections')->where('id', $connection->id)->value('credentials');
+        $this->assertStringNotContainsString('test-access-token', $stored);
+        $this->getJson(route('ai.index', $project))->assertOk()->assertDontSee('test-access-token')->assertJsonMissingPath('connections.0.credentials');
         $foreign = BacklogProject::factory()->create(['workspace' => 'foreign-project']);
         $this->getJson(route('ai.index', $foreign))->assertNotFound();
         $this->deleteJson(route('ai.disconnect', [$foreign, $connection]))->assertNotFound();
+        $this->putJson('/projects/'.$project->id.'/ai/connection', ['provider' => 'openai', 'api_key' => 'removed-key'])->assertNotFound();
     }
 
     public function test_analysis_requires_explicit_consent_and_project_owned_sources_and_connections(): void
@@ -55,13 +52,13 @@ class AiPlanningTest extends TestCase
     public function test_verified_source_linked_goal_is_added_only_on_explicit_request_and_remains_unapproved(): void
     {
         [$project, $connection] = $this->fixture();
-        DocumentPlanner::fake([$this->response()])->preventStrayPrompts();
+        $this->fakeChatGpt($this->response());
         $run = $this->start($project, $connection);
         Queue::assertPushed(AnalyzeProjectDocuments::class, fn ($job) => $job->analysisId === $run->id);
         app(AiPlanning::class)->analyze($run->id);
         $this->assertSame('ready', $run->fresh()->status);
         $this->assertSame([], $project->fresh()->state['nodes']);
-        DocumentPlanner::assertPrompted(fn ($prompt) => str_contains($prompt->prompt, 'doc-v1') && ! str_contains($prompt->prompt, 'unselected secret'));
+        Http::assertSent(fn ($request) => str_ends_with($request->url(), '/responses') && str_contains($request['input'][0]['content'], 'doc-v1') && ! str_contains($request['input'][0]['content'], 'unselected secret'));
         $result = $this->postJson(route('ai.apply', [$project, $run]), ['confirmation' => 'ADD_DRAFTS'])->assertOk()->assertJsonCount(1, 'state.nodes');
         $node = array_values($result->json('state.nodes'))[0];
         $this->assertSame('proposed', $node['status']);
@@ -88,7 +85,7 @@ class AiPlanningTest extends TestCase
         $first['criteria'] = ['Pack is ready before day one.'];
         $second = [...$first, 'key' => 'send', 'title' => 'Send the welcome pack', 'dependencies' => ['welcome']];
         $response = ['summary' => 'Two steps for review.', 'nodes' => [$first, $second], 'questions' => [['node_key' => 'welcome', 'question' => 'Who reviews the pack?', 'proposal' => 'HR reviews it.', 'rationale' => 'The owner is not specified.', 'alternatives' => ['Hiring manager reviews it.']]]];
-        DocumentPlanner::fake([$response])->preventStrayPrompts();
+        $this->fakeChatGpt($response);
         $run = $this->start($project, $connection, $parent);
         app(AiPlanning::class)->analyze($run->id);
         $result = $this->postJson(route('ai.apply', [$project, $run]), ['confirmation' => 'ADD_DRAFTS'])->assertOk();
@@ -126,7 +123,7 @@ class AiPlanningTest extends TestCase
             case 'question': $response['questions'] = [['node_key' => 'foreign', 'question' => 'Who?', 'proposal' => 'HR', 'rationale' => 'Unknown', 'alternatives' => []]];
                 break;
         }
-        DocumentPlanner::fake([$response])->preventStrayPrompts();
+        $this->fakeChatGpt($response);
         $run = $this->start($project, $connection);
         app(AiPlanning::class)->analyze($run->id);
         $this->assertSame('failed', $run->fresh()->status);
@@ -143,7 +140,7 @@ class AiPlanningTest extends TestCase
     public function test_changed_project_and_reset_generation_prevent_stale_import(): void
     {
         [$project, $connection] = $this->fixture();
-        DocumentPlanner::fake([$this->response()])->preventStrayPrompts();
+        $this->fakeChatGpt($this->response());
         $run = $this->start($project, $connection);
         app(AiPlanning::class)->analyze($run->id);
         $project->increment('version');
@@ -155,23 +152,23 @@ class AiPlanningTest extends TestCase
     public function test_keys_removed_or_roles_revoked_before_processing_prevent_provider_calls(): void
     {
         [$project, $connection] = $this->fixture();
-        DocumentPlanner::fake()->preventStrayPrompts();
+        Http::preventStrayRequests();
         $run = $this->start($project, $connection);
         $this->deleteJson(route('ai.disconnect', [$project, $connection]))->assertOk();
         app(AiPlanning::class)->analyze($run->id);
         $this->assertSame('failed', $run->fresh()->status);
-        DocumentPlanner::assertNeverPrompted();
+        Http::assertNothingSent();
     }
 
     public function test_duplicate_processing_and_concurrent_requests_do_not_repeat_provider_calls(): void
     {
         [$project, $connection] = $this->fixture();
-        DocumentPlanner::fake([$this->response()])->preventStrayPrompts();
+        $this->fakeChatGpt($this->response());
         $run = $this->start($project, $connection);
         $this->postJson(route('ai.analyze', $project), $this->payload($project, $connection))->assertUnprocessable();
         app(AiPlanning::class)->analyze($run->id);
         app(AiPlanning::class)->analyze($run->id);
-        DocumentPlanner::assertPromptedTimes(1);
+        $this->assertCount(1, Http::recorded(fn ($request) => str_ends_with($request->url(), '/responses')));
     }
 
     #[DataProvider('unprivilegedRoles')]
@@ -181,8 +178,8 @@ class AiPlanningTest extends TestCase
         $member = User::factory()->create();
         $project->team->members()->attach($member, ['role' => $role]);
         $this->actingAs($member);
-        $this->putJson(route('ai.connection', $project), ['provider' => 'openai', 'model' => 'test', 'api_key' => 'secret-test-key'])->assertForbidden();
-        $this->deleteJson(route('ai.disconnect', [$project, $connection]))->assertForbidden();
+        $this->patchJson(route('chatgpt.update', [$project, $connection]), ['model' => 'test', 'revision' => 1])->assertStatus($role === 'viewer' ? 403 : 404);
+        $this->deleteJson(route('ai.disconnect', [$project, $connection]))->assertNotFound();
         if ($role === 'viewer') {
             $this->postJson(route('ai.analyze', $project), $this->payload($project, $connection))->assertForbidden();
         }
@@ -193,23 +190,16 @@ class AiPlanningTest extends TestCase
         return [['viewer'], ['editor'], ['reviewer']];
     }
 
-    #[DataProvider('providerEndpoints')]
-    public function test_sdk_uses_only_the_selected_team_key_and_provider(string $provider, string $host, string $header, string $prefix): void
+    public function test_chatgpt_uses_only_personal_oauth_token_and_sanitizes_provider_errors(): void
     {
         [$project, $connection] = $this->fixture();
-        $connection->update(['provider' => $provider]);
-        Http::fake(['*' => Http::response(['error' => ['message' => 'test-ai-key-never-real']], 401)]);
+        Http::fake(['*' => Http::response(['error' => ['message' => 'test-access-token']], 401)]);
         $run = $this->start($project, $connection);
         app(AiPlanning::class)->analyze($run->id);
         Http::assertSentCount(1);
-        Http::assertSent(fn ($request) => str_contains($request->url(), $host) && $request->hasHeader($header, $prefix.'test-ai-key-never-real'));
+        Http::assertSent(fn ($request) => $request->url() === 'https://api.openai.com/v1/models' && $request->hasHeader('Authorization', 'Bearer test-access-token'));
         $this->assertSame('failed', $run->fresh()->status);
-        $this->getJson(route('ai.index', $project))->assertOk()->assertDontSee('test-ai-key-never-real');
-    }
-
-    public static function providerEndpoints(): array
-    {
-        return [['openai', 'api.openai.com', 'Authorization', 'Bearer '], ['anthropic', 'api.anthropic.com', 'x-api-key', ''], ['gemini', 'generativelanguage.googleapis.com', 'x-goog-api-key', '']];
+        $this->getJson(route('ai.index', $project))->assertOk()->assertDontSee('test-access-token');
     }
 
     public function test_document_limits_and_processing_permission_changes_are_enforced(): void
@@ -224,12 +214,13 @@ class AiPlanningTest extends TestCase
         $member = User::factory()->create();
         $project->team->members()->attach($member, ['role' => 'editor']);
         $this->actingAs($member);
+        $connection->update(['user_id' => $member->id]);
         $run = $this->start($project, $connection);
         $project->team->members()->updateExistingPivot($member->id, ['role' => 'viewer']);
-        DocumentPlanner::fake()->preventStrayPrompts();
+        Http::preventStrayRequests();
         app(AiPlanning::class)->analyze($run->id);
         $this->assertSame('failed', $run->fresh()->status);
-        DocumentPlanner::assertNeverPrompted();
+        Http::assertNothingSent();
     }
 
     public function test_cyclic_generated_dependencies_are_rejected(): void
@@ -248,7 +239,7 @@ class AiPlanningTest extends TestCase
     public function test_empty_supported_response_stays_readable_without_invented_proposals(): void
     {
         [$project, $connection] = $this->fixture();
-        DocumentPlanner::fake([['summary' => 'These notes do not describe a project outcome. Please add a clearer brief.', 'nodes' => [], 'questions' => []]])->preventStrayPrompts();
+        $this->fakeChatGpt(['summary' => 'These notes do not describe a project outcome. Please add a clearer brief.', 'nodes' => [], 'questions' => []]);
         $run = $this->start($project, $connection);
         app(AiPlanning::class)->analyze($run->id);
         $this->assertSame('ready', $run->fresh()->status);
@@ -275,7 +266,7 @@ class AiPlanningTest extends TestCase
 
     private function payload(BacklogProject $project, AiConnection $connection): array
     {
-        return ['version' => $project->version, 'connection_id' => $connection->id, 'document_ids' => ['doc-v1'], 'consent' => true];
+        return ['version' => $project->version, 'connection_id' => $connection->id, 'connection_revision' => $connection->revision, 'document_ids' => ['doc-v1'], 'consent' => true];
     }
 
     private function start(BacklogProject $project, AiConnection $connection, ?string $parent = null): AiAnalysis

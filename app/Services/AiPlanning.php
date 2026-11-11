@@ -14,7 +14,6 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
-use Laravel\Ai\Ai;
 use Throwable;
 
 class AiPlanning
@@ -27,8 +26,11 @@ class AiPlanning
             Gate::forUser($user)->authorize('edit', $project->team);
             $project = BacklogProject::whereKey($project->id)->lockForUpdate()->firstOrFail();
             abort_if($project->version !== $input['version'], 409, 'The project changed. Refresh before starting analysis.');
-            $connection = AiConnection::where('team_id', $project->team_id)->findOrFail($input['connection_id']);
-            $this->ensure((bool) $connection->api_key, 'Ask an administrator to reconnect this AI provider.');
+            $connection = AiConnection::where('team_id', $project->team_id)->visibleTo($user)->findOrFail($input['connection_id']);
+            if ($connection->user_id !== null || isset($input['connection_revision'])) {
+                abort_if(($input['connection_revision'] ?? null) !== $connection->revision, 409, 'The AI connection changed. Review its model and billing details, then confirm analysis again.');
+            }
+            $this->ensure($connection->usableBy($user), 'This AI connection is not available to you. Reconnect or choose another connection.');
             $this->ensure(! AiAnalysis::where('backlog_project_id', $project->id)->whereIn('status', ['queued', 'processing'])->exists(), 'An analysis is already in progress for this project.');
             $parent = $input['parent_node_id'] ?? null;
             $this->checkParent($project->state, $parent);
@@ -108,8 +110,7 @@ class AiPlanning
             Gate::forUser($user)->authorize('edit', $project->team);
             $this->ensure($project->generation === $run->generation && $project->version === $run->project_version, 'The project changed before analysis started. Start again with the current documents.');
             $connection = AiConnection::where('team_id', $project->team_id)->findOrFail($run->ai_connection_id);
-            $this->ensure($connection->revision === $run->connection_revision && (bool) $connection->api_key, 'The AI connection changed. Start a new analysis.');
-            $provider = Ai::build(['name' => 'tracework-'.$connection->id.'-'.$connection->revision, 'driver' => $run->provider, 'key' => $connection->api_key]);
+            $this->ensure($connection->revision === $run->connection_revision && $connection->usableBy($user), 'The AI connection changed. Start a new analysis.');
             $input = $run->input;
             unset($input['instructions']);
             foreach ($input['documents'] as &$document) {
@@ -118,11 +119,11 @@ class AiPlanning
             }
             unset($document);
             $stage = 'request';
-            $response = DocumentPlanner::make($run->input['instructions'])->prompt(json_encode($input, JSON_THROW_ON_ERROR), provider: $provider->name(), model: $run->model, timeout: 45);
-            $result = $this->validateResult($run, $response->toArray());
-            $run->update(['status' => 'ready', 'result' => $result, 'usage' => $response->usage->toArray(), 'finished_at' => now()]);
+            $response = app(ChatGptInference::class)->analyze($connection, $run->input['instructions'], json_encode($input, JSON_THROW_ON_ERROR));
+            $result = $this->validateResult($run, $response['result']);
+            $run->update(['status' => 'ready', 'result' => $result, 'usage' => $response['usage'], 'finished_at' => now()]);
         } catch (Throwable $error) {
-            $message = $stage === 'preflight' && $error instanceof ValidationException ? collect($error->errors())->flatten()->implode(' ') : ($error instanceof ValidationException ? 'The response could not be verified against your documents. No proposals were added. Try again or refine the documents.' : 'Analysis could not finish. Check the provider key, model access, and usage allowance, then start a new analysis. No proposals were added.');
+            $message = $error instanceof ValidationException && ($stage === 'preflight' || isset($error->errors()['chatgpt'])) ? collect($error->errors())->flatten()->implode(' ') : ($error instanceof ValidationException ? 'The response could not be verified against your documents. No proposals were added. Try again or refine the documents.' : 'Analysis could not finish. Check your ChatGPT connection, model access, and usage allowance, then start a new analysis. No proposals were added.');
             $run->update(['status' => 'failed', 'error' => $message, 'finished_at' => now()]);
         }
     }

@@ -28,7 +28,7 @@ function App({ identity, refreshIdentity, projectContext }) {
     const [project, setProject] = useState(null);
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
-    const [tab, setTab] = useState(!identity.team ? 'team' : new URLSearchParams(window.location.search).has('settings') && projectContext.project ? 'settings' : new URLSearchParams(window.location.search).get('view') === 'overview' && projectContext.project ? 'overview' : 'projects');
+    const [tab, setTab] = useState(!identity.team ? 'team' : new URLSearchParams(window.location.search).has('settings') && projectContext.project ? 'settings' : ['overview', 'ai'].includes(new URLSearchParams(window.location.search).get('view')) && projectContext.project ? new URLSearchParams(window.location.search).get('view') : 'projects');
     const [selected, setSelected] = useState(null);
     const [expanded, setExpanded] = useState(['root', 'requests', 'resolution']);
     const [dependencies, setDependencies] = useState(false);

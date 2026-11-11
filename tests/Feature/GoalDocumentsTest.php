@@ -111,7 +111,7 @@ class GoalDocumentsTest extends TestCase
         $project = $this->fixture();
         Queue::fake();
         $connection = AiConnection::factory()->create(['team_id' => $project->team_id]);
-        $this->postJson(route('ai.analyze', $project), ['version' => $project->version, 'connection_id' => $connection->id, 'parent_node_id' => 'resolution', 'document_ids' => ['brief-v1'], 'consent' => true])->assertUnprocessable();
+        $this->postJson(route('ai.analyze', $project), ['version' => $project->version, 'connection_id' => $connection->id, 'connection_revision' => $connection->revision, 'parent_node_id' => 'resolution', 'document_ids' => ['brief-v1'], 'consent' => true])->assertUnprocessable();
         $this->assertDatabaseCount('ai_analyses', 0);
         Queue::assertNothingPushed();
     }
